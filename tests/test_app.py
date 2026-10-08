@@ -1,0 +1,97 @@
+import hashlib
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from openpyxl import Workbook
+
+import excel_reader
+from app import create_app
+
+
+def make_xlsx(path: Path, rows: list[list], sheet: str = "工作表1") -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet
+    for row in rows:
+        ws.append(row)
+    wb.save(path)
+
+
+def file_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.fixture
+def data_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "data"
+    d.mkdir()
+    make_xlsx(d / "員工.xlsx", [["姓名", "部門"], ["王小明", "資訊部"], ["李小華", "業務部"]])
+    make_xlsx(d / "設備.xlsx", [["編號", "名稱"], ["A001", "筆電"], ["A002", "螢幕"]])
+    (d / "~$員工.xlsx").write_bytes(b"lock")
+    excel_reader._cache.clear()
+    return d
+
+
+@pytest.fixture
+def client(data_dir: Path) -> TestClient:
+    return TestClient(create_app({"data_dir": data_dir}))
+
+
+def test_list_categories_skips_lock_files(data_dir):
+    assert excel_reader.list_categories(data_dir) == ["員工", "設備"]
+
+
+def test_read_does_not_modify_original(data_dir):
+    path = data_dir / "員工.xlsx"
+    before_hash, before_mtime = file_hash(path), path.stat().st_mtime
+    excel_reader.read_excel_safely(path)
+    assert file_hash(path) == before_hash
+    assert path.stat().st_mtime == before_mtime
+    assert sorted(p.name for p in data_dir.iterdir()) == ["~$員工.xlsx", "員工.xlsx", "設備.xlsx"]
+
+
+def test_temp_copy_is_deleted(data_dir, tmp_path, monkeypatch):
+    tmp_root = tmp_path / "tmp"
+    tmp_root.mkdir()
+    monkeypatch.setattr(excel_reader.tempfile, "tempdir", str(tmp_root))
+    excel_reader.read_excel_safely(data_dir / "員工.xlsx")
+    assert list(tmp_root.iterdir()) == []
+
+
+def test_search_all_categories(data_dir):
+    results = excel_reader.search(data_dir, "a00")
+    assert len(results) == 1
+    assert results[0]["category"] == "設備"
+    assert results[0]["columns"] == ["編號", "名稱"]
+    assert results[0]["rows"] == [["A001", "筆電"], ["A002", "螢幕"]]
+
+
+def test_search_respects_max_results(data_dir):
+    results = excel_reader.search(data_dir, "A00", max_results=1)
+    assert sum(len(g["rows"]) for g in results) == 1
+
+
+def test_api_categories(client):
+    assert client.get("/api/categories").json() == ["員工", "設備"]
+
+
+def test_api_search_with_category(client):
+    res = client.get("/api/search", params={"q": "資訊", "category": "員工"})
+    assert res.status_code == 200
+    assert res.json()[0]["rows"] == [["王小明", "資訊部"]]
+
+
+def test_api_rejects_unknown_category(client):
+    res = client.get("/api/search", params={"q": "x", "category": "../secret"})
+    assert res.status_code == 404
+
+
+def test_api_empty_query(client):
+    assert client.get("/api/search", params={"q": "  "}).json() == []
+
+
+def test_index_page(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    assert "Excel 查詢" in res.text

@@ -1,0 +1,23 @@
+# 虛擬環境
+venv/
+.venv/
+
+# 備份
+backups/
+
+# Python 快取
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 含真實路徑的設定檔(請複製 config.example.json 自行建立)
+config.json
+
+# Excel 資料與暫存鎖定檔
+data/*
+!data/.gitkeep
+~$*.xlsx
+
+# 系統檔
+.DS_Store
+Thumbs.db
