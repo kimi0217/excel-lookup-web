@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Excel 查詢</title>
+<style>
+  :root { --bg: #f7f7f8; --fg: #1f2328; --muted: #6b7280; --line: #d9dce1; --accent: #2563eb; --hit: #fde68a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, "PingFang TC", "Microsoft JhengHei", sans-serif; background: var(--bg); color: var(--fg); }
+  header { padding: 16px; background: #fff; border-bottom: 1px solid var(--line); position: sticky; top: 0; }
+  h1 { margin: 0 0 12px; font-size: 20px; }
+  form { display: flex; gap: 8px; flex-wrap: wrap; }
+  select, input, button { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+  input { flex: 1; min-width: 200px; }
+  button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; }
+  main { padding: 16px; }
+  #status { color: var(--muted); margin-bottom: 12px; }
+  section { background: #fff; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
+  section h2 { margin: 0; padding: 10px 12px; font-size: 15px; border-bottom: 1px solid var(--line); }
+  section h2 small { color: var(--muted); font-weight: normal; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+  th { background: #f1f2f4; }
+  mark { background: var(--hit); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Excel 查詢</h1>
+  <form id="form">
+    <select id="category"><option value="">全部分類</option></select>
+    <input id="q" type="search" placeholder="輸入關鍵字…" autofocus>
+    <button type="submit">搜尋</button>
+  </form>
+</header>
+<main>
+  <div id="status">請輸入關鍵字開始搜尋</div>
+  <div id="results"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function highlight(text, q) {
+  const safe = escapeHtml(text);
+  if (!q) return safe;
+  const pattern = escapeHtml(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return safe.replace(new RegExp(pattern, "gi"), (m) => `<mark>${m}</mark>`);
+}
+
+async function loadCategories() {
+  try {
+    const res = await fetch("/api/categories");
+    const cats = await res.json();
+    for (const c of cats) {
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      $("category").appendChild(opt);
+    }
+    if (cats.length === 0) $("status").textContent = "資料夾中沒有任何 Excel 檔案";
+  } catch {
+    $("status").textContent = "無法載入分類";
+  }
+}
+
+async function doSearch(e) {
+  e.preventDefault();
+  const q = $("q").value.trim();
+  const category = $("category").value;
+  if (!q) { $("status").textContent = "請輸入關鍵字"; $("results").innerHTML = ""; return; }
+  $("status").textContent = "搜尋中…";
+  const params = new URLSearchParams({ q });
+  if (category) params.set("category", category);
+  try {
+    const res = await fetch(`/api/search?${params}`);
+    if (!res.ok) throw new Error((await res.json()).detail || "搜尋失敗");
+    render(await res.json(), q);
+  } catch (err) {
+    $("status").textContent = `錯誤:${err.message}`;
+    $("results").innerHTML = "";
+  }
+}
+
+function render(groups, q) {
+  const total = groups.reduce((n, g) => n + g.rows.length, 0);
+  $("status").textContent = total ? `共找到 ${total} 筆` : "查無資料";
+  $("results").innerHTML = groups.map((g) => `
+    <section>
+      <h2>${escapeHtml(g.category)} <small>/ ${escapeHtml(g.sheet)}(${g.rows.length} 筆)</small></h2>
+      <div class="scroll"><table>
+        <thead><tr>${g.columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead>
+        <tbody>${g.rows.map((r) => `<tr>${r.map((v) => `<td>${highlight(v, q)}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table></div>
+    </section>`).join("");
+}
+
+$("form").addEventListener("submit", doSearch);
+loadCategories();
+</script>
+</body>
+</html>
