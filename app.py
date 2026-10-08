@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 
+import backup
 import excel_reader
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+BACKUP_CHECK_SECONDS = 60 * 60  # 每小時檢查一次,當日已備份就略過
+
+logger = logging.getLogger(__name__)
 
 
 def load_config() -> dict:
@@ -24,19 +31,36 @@ def load_config() -> dict:
             break
     else:
         config = {}
-    data_dir = Path(config.get("data_dir", "./data")).expanduser()
-    if not data_dir.is_absolute():
-        data_dir = BASE_DIR / data_dir
-    config["data_dir"] = data_dir
+    for key, default in (("data_dir", "./data"), ("backup_dir", "./backups")):
+        path = Path(config.get(key, default)).expanduser()
+        config[key] = path if path.is_absolute() else BASE_DIR / path
     return config
+
+
+async def backup_loop(data_dir: Path, backup_dir: Path, keep_days: int) -> None:
+    while True:
+        try:
+            await asyncio.to_thread(backup.run_backup, data_dir, backup_dir, keep_days)
+        except Exception:
+            logger.exception("自動備份失敗")
+        await asyncio.sleep(BACKUP_CHECK_SECONDS)
 
 
 def create_app(config: dict | None = None) -> FastAPI:
     config = config or load_config()
     data_dir: Path = config["data_dir"]
     max_results: int = config.get("max_results", 500)
+    backup_dir: Path | None = config.get("backup_dir")
+    keep_days: int = config.get("backup_keep_days", 30)
 
-    app = FastAPI(title="Excel 查詢")
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        task = asyncio.create_task(backup_loop(data_dir, backup_dir, keep_days)) if backup_dir else None
+        yield
+        if task:
+            task.cancel()
+
+    app = FastAPI(title="Excel 查詢", lifespan=lifespan)
 
     @app.get("/")
     def index() -> FileResponse:
