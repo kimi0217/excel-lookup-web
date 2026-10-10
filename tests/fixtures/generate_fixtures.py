@@ -160,7 +160,8 @@ def encrypted_like(path: Path) -> None:
     這裡寫入 OLE 檔頭加填充資料,模擬程式讀到加密檔時看到的格式。
     """
     ole_magic = bytes.fromhex("D0CF11E0A1B11AE1")
-    path.write_bytes(ole_magic + b"\x00" * 504 + b"EncryptedPackage" + b"\x00" * 1024)
+    stream_name = "EncryptedPackage".encode("utf-16-le")  # OLE 目錄中的名稱為 UTF-16LE
+    path.write_bytes(ole_magic + b"\x00" * 504 + stream_name + b"\x00" * 1024)
 
 
 def corrupted(path: Path) -> None:

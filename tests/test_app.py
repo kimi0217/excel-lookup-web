@@ -60,7 +60,7 @@ def test_temp_copy_is_deleted(data_dir, tmp_path, monkeypatch):
 
 
 def test_search_all_categories(data_dir):
-    results = excel_reader.search(data_dir, "a00")
+    results = excel_reader.search(data_dir, "a00")["results"]
     assert len(results) == 1
     assert results[0]["category"] == "設備"
     assert results[0]["columns"] == ["編號", "名稱"]
@@ -68,18 +68,21 @@ def test_search_all_categories(data_dir):
 
 
 def test_search_respects_max_results(data_dir):
-    results = excel_reader.search(data_dir, "A00", max_results=1)
+    results = excel_reader.search(data_dir, "A00", max_results=1)["results"]
     assert sum(len(g["rows"]) for g in results) == 1
 
 
 def test_api_categories(client):
-    assert client.get("/api/categories").json() == ["員工", "設備"]
+    assert client.get("/api/categories").json() == [
+        {"name": "員工", "error": None},
+        {"name": "設備", "error": None},
+    ]
 
 
 def test_api_search_with_category(client):
     res = client.get("/api/search", params={"q": "資訊", "category": "員工"})
     assert res.status_code == 200
-    assert res.json()[0]["rows"] == [["王小明", "資訊部"]]
+    assert res.json()["results"][0]["rows"] == [["王小明", "資訊部"]]
 
 
 def test_api_rejects_unknown_category(client):
@@ -88,7 +91,7 @@ def test_api_rejects_unknown_category(client):
 
 
 def test_api_empty_query(client):
-    assert client.get("/api/search", params={"q": "  "}).json() == []
+    assert client.get("/api/search", params={"q": "  "}).json() == {"results": [], "errors": []}
 
 
 def test_index_page(client):
