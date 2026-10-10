@@ -76,14 +76,14 @@ def test_failed_read_leaves_no_temp_files(data_dir, tmp_path, monkeypatch):
 
 
 def test_unexpected_error_only_affects_that_file(data_dir, monkeypatch):
-    real_read = excel_reader.pd.read_excel
+    real_read = excel_reader.load_workbook
 
     def flaky_read(path, *args, **kwargs):
         if Path(path).stem == "設備":
             raise RuntimeError("意外錯誤")
         return real_read(path, *args, **kwargs)
 
-    monkeypatch.setattr(excel_reader.pd, "read_excel", flaky_read)
+    monkeypatch.setattr(excel_reader, "load_workbook", flaky_read)
     result = excel_reader.search(data_dir, "王小明")
     assert [g["category"] for g in result["results"]] == ["員工"]
     assert {"category": "設備", "error": excel_reader.MSG_CORRUPTED} in result["errors"]
