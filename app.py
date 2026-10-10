@@ -50,6 +50,7 @@ def create_app(config: dict | None = None) -> FastAPI:
     config = config or load_config()
     data_dir: Path = config["data_dir"]
     max_results: int = config.get("max_results", 500)
+    include_hidden: bool = config.get("include_hidden_sheets", False)
     backup_dir: Path | None = config.get("backup_dir")
     keep_days: int = config.get("backup_keep_days", 30)
 
@@ -82,7 +83,7 @@ def create_app(config: dict | None = None) -> FastAPI:
     ) -> dict:
         if category and category not in excel_reader.list_categories(data_dir):
             raise HTTPException(status_code=404, detail="找不到此分類")
-        return excel_reader.search(data_dir, q, category or None, max_results)
+        return excel_reader.search(data_dir, q, category or None, max_results, include_hidden)
 
     return app
 
