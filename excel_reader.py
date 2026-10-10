@@ -97,16 +97,22 @@ def _read_sheet(ws) -> Sheet:
     return Sheet.build(_unique_columns(header), data)
 
 
-def _read_workbook(path: Path) -> dict[str, Sheet]:
+def _read_workbook(path: Path, include_hidden: bool) -> dict[str, Sheet]:
     wb = load_workbook(path, read_only=True, data_only=True)  # data_only:公式讀取 Excel 存下的計算結果
     try:
-        return {ws.title: _read_sheet(ws) for ws in wb.worksheets}
+        return {
+            ws.title: _read_sheet(ws)
+            for ws in wb.worksheets
+            if include_hidden or ws.sheet_state == "visible"  # 隱藏、極度隱藏的工作表預設不讀
+        }
     finally:
         wb.close()  # 先釋放檔案,Windows 才能刪除暫存檔
 
 
-def read_excel_safely(path: Path) -> dict[str, Sheet]:
-    """複製到暫存資料夾後讀取所有工作表,讀完立即刪除暫存檔。
+def read_excel_safely(path: Path, include_hidden: bool = False) -> dict[str, Sheet]:
+    """複製到暫存資料夾後讀取工作表,讀完立即刪除暫存檔。
+
+    include_hidden 為 False 時不讀取隱藏與極度隱藏的工作表。
 
     讀取失敗時拋出 ExcelReadError,訊息為簡短的中文原因。
     """
@@ -117,7 +123,7 @@ def read_excel_safely(path: Path) -> dict[str, Sheet]:
         except OSError as exc:
             raise ExcelReadError(MSG_UNAVAILABLE) from exc
         try:
-            return _read_workbook(tmp_path)
+            return _read_workbook(tmp_path, include_hidden)
         except Exception as exc:
             logger.warning("無法讀取 %s:%r", path.name, exc)
             raise ExcelReadError(_describe_failure(tmp_path)) from exc
@@ -126,10 +132,10 @@ def read_excel_safely(path: Path) -> dict[str, Sheet]:
 
 
 # 依檔案路徑快取讀取結果(成功為工作表、失敗為 ExcelReadError),檔案變動才重讀
-_cache: dict[Path, tuple[tuple[float, int], dict[str, Sheet] | ExcelReadError]] = {}
+_cache: dict[Path, tuple[tuple[float, int, bool], dict[str, Sheet] | ExcelReadError]] = {}
 
 
-def load_category(data_dir: Path, category: str) -> dict[str, Sheet]:
+def load_category(data_dir: Path, category: str, include_hidden: bool = False) -> dict[str, Sheet]:
     """讀取某分類;檔案未變動(修改時間與大小相同)時使用快取。"""
     if category not in list_categories(data_dir):
         raise KeyError(category)
@@ -138,13 +144,13 @@ def load_category(data_dir: Path, category: str) -> dict[str, Sheet]:
         stat = path.stat()
     except OSError as exc:  # 列出後到讀取前被刪除或改名
         raise ExcelReadError(MSG_UNAVAILABLE) from exc
-    key = (stat.st_mtime, stat.st_size)
+    key = (stat.st_mtime, stat.st_size, include_hidden)
     cached = _cache.get(path)
     if cached and cached[0] == key:
         result = cached[1]
     else:
         try:
-            result = read_excel_safely(path)
+            result = read_excel_safely(path, include_hidden)
         except ExcelReadError as exc:
             result = exc
         _cache[path] = (key, result)
@@ -162,7 +168,7 @@ def category_errors(data_dir: Path) -> dict[str, str]:
         if not cached or not isinstance(cached[1], ExcelReadError):
             continue
         stat = path.stat()
-        if cached[0] == (stat.st_mtime, stat.st_size):
+        if cached[0][:2] == (stat.st_mtime, stat.st_size):
             errors[category] = str(cached[1])
     return errors
 
@@ -172,6 +178,7 @@ def search(
     query: str,
     category: str | None = None,
     max_results: int = 500,
+    include_hidden: bool = False,
 ) -> dict:
     """在指定分類(或全部分類)中搜尋包含關鍵字的列。
 
@@ -187,7 +194,7 @@ def search(
     remaining = max_results
     for cat in categories:
         try:
-            sheets = load_category(data_dir, cat)
+            sheets = load_category(data_dir, cat, include_hidden)
         except ExcelReadError as exc:
             errors.append({"category": cat, "error": str(exc)})
             continue
