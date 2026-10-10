@@ -1,11 +1,10 @@
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 import excel_reader
-from app import create_app
+from conftest import loaded_client
 
 
 @pytest.fixture
@@ -22,7 +21,6 @@ def data_dir(tmp_path: Path) -> Path:
         ws.append(["機密", f"共同關鍵字 {title}"])
         ws.sheet_state = state
     wb.save(d / "文件.xlsx")
-    excel_reader._cache.clear()
     return d
 
 
@@ -37,7 +35,7 @@ def test_hidden_sheets_included_when_enabled(data_dir):
 
 
 def search_sheets(config: dict) -> list[str]:
-    client = TestClient(create_app(config))
+    client = loaded_client(config)
     body = client.get("/api/search", params={"q": "共同關鍵字"}).json()
     return [g["sheet"] for g in body["results"]]
 
