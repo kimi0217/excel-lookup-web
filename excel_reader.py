@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import tempfile
 import threading
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.utils import column_index_from_string
 
 from cell_format import display_value, normalize
+from table_layout import Merge, build_table
 
 logger = logging.getLogger(__name__)
 
@@ -69,43 +73,59 @@ def _describe_failure(tmp_path: Path) -> str:
     return MSG_CORRUPTED
 
 
-def _unique_columns(header: list[str]) -> list[str]:
-    """空白欄名改為「Unnamed: n」,重複欄名加上 .1、.2(與 pandas 相同)。"""
-    columns, seen = [], {}
-    for i, name in enumerate(header):
-        name = name or f"Unnamed: {i}"
-        if name in seen:
-            seen[name] += 1
-            name = f"{name}.{seen[name]}"
-        else:
-            seen[name] = 0
-        columns.append(name)
-    return columns
+# 工作表 XML 中的 <mergeCell ref="A3:A5"/>(可能帶命名空間前綴)
+_MERGE_REF = re.compile(rb'<(?:\w+:)?mergeCell\b[^>]*?\bref="([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?"')
+TYPE_SAMPLE_ROWS = 60  # 只記錄前 60 列的儲存格型別,供偵測表頭使用
 
 
-def _read_sheet(ws) -> Sheet:
-    """第一列為欄位名稱;完全空白的列略過,尾端的空白欄去掉。"""
+def _merge_ranges(archive: zipfile.ZipFile, ws) -> list[Merge]:
+    """讀取工作表的合併範圍。openpyxl 唯讀模式不提供,直接從工作表 XML 取得。"""
+    sheet_path = getattr(ws, "_worksheet_path", None)
+    if not sheet_path:
+        return []
+    try:
+        xml = archive.read(sheet_path.lstrip("/"))
+    except KeyError:
+        return []
+    if b"mergeCell" not in xml:
+        return []
+    merges = []
+    for c1, r1, c2, r2 in _MERGE_REF.findall(xml):
+        c2, r2 = c2 or c1, r2 or r1
+        merges.append(Merge(
+            int(r1) - 1, column_index_from_string(c1.decode()) - 1,
+            int(r2) - 1, column_index_from_string(c2.decode()) - 1,
+        ))
+    return merges
+
+
+def _read_sheet(ws, merges: list[Merge]) -> Sheet:
+    """讀出顯示文字的網格後,交給 build_table 偵測表頭、填入合併格、整理欄位。"""
     ws.reset_dimensions()  # 有些程式產生的檔案記錄的範圍不正確,改為實際讀到哪算到哪
-    grid = [
-        [display_value(cell.value, cell.number_format) for cell in row]
-        for row in ws.iter_rows()
-    ]
-    if not grid:
-        return Sheet.build([], [])
+    grid: list[list[str]] = []
+    is_text: list[list[bool]] = []
+    for row in ws.iter_rows():
+        grid.append([display_value(cell.value, cell.number_format) for cell in row])
+        if len(is_text) < TYPE_SAMPLE_ROWS:
+            is_text.append([isinstance(cell.value, str) and bool(cell.value.strip()) for cell in row])
     width = max((max((i + 1 for i, v in enumerate(r) if v), default=0) for r in grid), default=0)
+    width = max([width] + [m.max_col + 1 for m in merges if m.min_row < len(grid)])
     grid = [(r + [""] * width)[:width] for r in grid]
-    header, data = grid[0], [r for r in grid[1:] if any(r)]
-    return Sheet.build(_unique_columns(header), data)
+    is_text = [(r + [False] * width)[:width] for r in is_text]
+    merges = [m for m in merges if m.min_row < len(grid)]
+    columns, rows = build_table(grid, is_text, merges)
+    return Sheet.build(columns, rows)
 
 
 def _read_workbook(path: Path, include_hidden: bool) -> dict[str, Sheet]:
     wb = load_workbook(path, read_only=True, data_only=True)  # data_only:公式讀取 Excel 存下的計算結果
     try:
-        return {
-            ws.title: _read_sheet(ws)
-            for ws in wb.worksheets
-            if include_hidden or ws.sheet_state == "visible"  # 隱藏、極度隱藏的工作表預設不讀
-        }
+        with zipfile.ZipFile(path) as archive:
+            return {
+                ws.title: _read_sheet(ws, _merge_ranges(archive, ws))
+                for ws in wb.worksheets
+                if include_hidden or ws.sheet_state == "visible"  # 隱藏、極度隱藏的工作表預設不讀
+            }
     finally:
         wb.close()  # 先釋放檔案,Windows 才能刪除暫存檔
 

@@ -42,10 +42,35 @@ def test_dates(value, expected):
         (2.0, "0.##", "2"),
         (5, "[Red]0000", "0005"),
         (123, "@", "123"),
-        (99, '"NT$"#,##0', "99"),  # 無法辨識的格式改用一般格式
+        (1.5, "# ?/?", "1.5"),  # 分數格式不支援,改用一般格式
+        (12345, "0.00E+00", "12345"),  # 科學記號不支援,改用一般格式
     ],
 )
 def test_number_formats(value, fmt, expected):
+    assert format_number(value, fmt) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "fmt", "expected"),
+    [
+        (1000, '"NT$"#,##0', "NT$1,000"),
+        (1000, "[$NT$-404]#,##0", "NT$1,000"),
+        (1234.5, '[$NT$-404]#,##0.00', "NT$1,234.50"),
+        (1000, "$#,##0", "$1,000"),
+        (-1000, "$#,##0", "-$1,000"),
+        (-1000, "$#,##0;($#,##0)", "($1,000)"),
+        (-1000, '"NT$"#,##0;[Red]"NT$"#,##0', "NT$1,000"),  # 負數段沒有負號,Excel 也不顯示
+        (1000, '#,##0 "元"', "1,000 元"),
+        (1000, "#,##0\\元", "1,000元"),
+        (1000, "¥#,##0", "¥1,000"),
+        (1000, "€#,##0.00", "€1,000.00"),
+        (1000, '_-"NT$"* #,##0_-;-"NT$"* #,##0_-;_-"NT$"* "-"_-;_-@_-', "NT$1,000"),  # 會計格式(* 為填滿字元,省略)
+        (0, '_-"NT$"* #,##0_-;-"NT$"* #,##0_-;_-"NT$"* "-"_-;_-@_-', "NT$-"),
+        (5, '"NT$"General', "NT$5"),
+        (5, '"A;B"0', "A;B5"),  # 引號內的 ; 不是分段
+    ],
+)
+def test_currency_formats(value, fmt, expected):
     assert format_number(value, fmt) == expected
 
 
@@ -67,25 +92,35 @@ def data_dir(tmp_path: Path) -> Path:
     d.mkdir()
     wb = Workbook()
     ws = wb.active
-    ws.append(["料號", "品名", "簽約日", "到期時間", "金額"])
-    ws.append([123, "螺絲", datetime(2026, 1, 15), datetime(2026, 12, 31, 17, 30), 1234567])
+    ws.append(["料號", "品名", "簽約日", "到期時間", "金額", "單價"])
+    ws.append([123, "螺絲", datetime(2026, 1, 15), datetime(2026, 12, 31, 17, 30), 1234567, 1000])
     ws["A2"].number_format = "00000"
     ws["C2"].number_format = "yyyy/mm/dd"
     ws["D2"].number_format = "yyyy/mm/dd hh:mm"
     ws["E2"].number_format = "#,##0"
+    ws["F2"].number_format = '"NT$"#,##0'
     wb.save(d / "料號.xlsx")
     return d
 
 
 def test_read_restores_display(data_dir):
     sheet = excel_reader.read_excel_safely(data_dir / "料號.xlsx")["Sheet"]
-    assert sheet.rows == [["00123", "螺絲", "2026-01-15", "2026-12-31 17:30", "1,234,567"]]
+    assert sheet.rows == [["00123", "螺絲", "2026-01-15", "2026-12-31 17:30", "1,234,567", "NT$1,000"]]
 
 
-@pytest.mark.parametrize("query", ["00123", "2026/01/15", "2026-01-15", "2026/12/31 17:30", "1234567", "1,234,567"])
+@pytest.mark.parametrize(
+    "query",
+    ["00123", "2026/01/15", "2026-01-15", "2026/12/31 17:30", "1234567", "1,234,567", "NT$1,000", "nt$1000"],
+)
 def test_search_matches_displayed_text(data_dir, query):
     results = search(data_dir, query)["results"]
     assert results and results[0]["rows"][0][1] == "螺絲"
+
+
+@pytest.mark.parametrize("query", ["1000", "1,000"])
+def test_search_currency_by_number(data_dir, query):
+    rows = search(data_dir, query)["results"][0]["rows"]
+    assert rows[0][5] == "NT$1,000"
 
 
 def test_search_does_not_match_across_cells(data_dir):

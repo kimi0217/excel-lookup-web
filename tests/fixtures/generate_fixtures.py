@@ -188,6 +188,29 @@ def large(path: Path, rows: int = 50_000) -> None:
     wb.save(path)
 
 
+def currency(path: Path) -> None:
+    """貨幣格式:自訂 NT$、地區貨幣標記、會計格式、後綴「元」、負數括號。"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "價目表"
+    ws.append(["品名", "單價(NT$)", "地區格式", "會計格式", "元", "差額"])
+    formats = [
+        '"NT$"#,##0',
+        "[$NT$-404]#,##0.00",
+        '_-"NT$"* #,##0_-;-"NT$"* #,##0_-;_-"NT$"* "-"_-;_-@_-',
+        '#,##0 "元"',
+        "$#,##0;($#,##0)",
+    ]
+    for r, (name, values) in enumerate(
+        [("筆電", (30000, 30000, 30000, 30000, -1500)), ("滑鼠", (1000, 1000.5, 0, 1000, 250))],
+        start=2,
+    ):
+        ws.cell(r, 1, name)
+        for c, (value, fmt) in enumerate(zip(values, formats), start=2):
+            ws.cell(r, c, value).number_format = fmt
+    wb.save(path)
+
+
 CASES = {
     "01_標題列": title_rows,
     "02_合併儲存格": merged_cells,
@@ -201,6 +224,7 @@ CASES = {
     "10_加密檔": encrypted_like,
     "11_損毀檔": corrupted,
     "12_五萬列大檔": large,
+    "13_貨幣格式": currency,
 }
 
 
