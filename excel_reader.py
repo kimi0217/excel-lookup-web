@@ -5,9 +5,13 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
+from openpyxl import load_workbook
+
+from cell_format import display_value, normalize
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +26,27 @@ MSG_CORRUPTED = "此檔案已損毀,無法讀取"
 MSG_UNAVAILABLE = "此檔案目前無法存取,請稍後再試"
 
 
+ROW_SEPARATOR = "\x1f"  # 組合搜尋字串時分隔儲存格,避免跨儲存格誤判為符合
+
+
 class ExcelReadError(Exception):
     """讀取失敗;訊息是給使用者看的簡短原因。"""
+
+
+@dataclass
+class Sheet:
+    """一個工作表:欄位名稱、顯示用的各列文字,以及每列正規化後的搜尋字串。"""
+
+    columns: list[str]
+    rows: list[list[str]]
+    haystack: pd.Series
+
+    @classmethod
+    def build(cls, columns: list[str], rows: list[list[str]]) -> Sheet:
+        haystack = pd.Series(
+            [normalize(ROW_SEPARATOR.join(row)) for row in rows], dtype=object
+        )
+        return cls(columns, rows, haystack)
 
 
 def list_categories(data_dir: Path) -> list[str]:
@@ -45,7 +68,44 @@ def _describe_failure(tmp_path: Path) -> str:
     return MSG_CORRUPTED
 
 
-def read_excel_safely(path: Path) -> dict[str, pd.DataFrame]:
+def _unique_columns(header: list[str]) -> list[str]:
+    """空白欄名改為「Unnamed: n」,重複欄名加上 .1、.2(與 pandas 相同)。"""
+    columns, seen = [], {}
+    for i, name in enumerate(header):
+        name = name or f"Unnamed: {i}"
+        if name in seen:
+            seen[name] += 1
+            name = f"{name}.{seen[name]}"
+        else:
+            seen[name] = 0
+        columns.append(name)
+    return columns
+
+
+def _read_sheet(ws) -> Sheet:
+    """第一列為欄位名稱;完全空白的列略過,尾端的空白欄去掉。"""
+    ws.reset_dimensions()  # 有些程式產生的檔案記錄的範圍不正確,改為實際讀到哪算到哪
+    grid = [
+        [display_value(cell.value, cell.number_format) for cell in row]
+        for row in ws.iter_rows()
+    ]
+    if not grid:
+        return Sheet.build([], [])
+    width = max((max((i + 1 for i, v in enumerate(r) if v), default=0) for r in grid), default=0)
+    grid = [(r + [""] * width)[:width] for r in grid]
+    header, data = grid[0], [r for r in grid[1:] if any(r)]
+    return Sheet.build(_unique_columns(header), data)
+
+
+def _read_workbook(path: Path) -> dict[str, Sheet]:
+    wb = load_workbook(path, read_only=True, data_only=True)  # data_only:公式讀取 Excel 存下的計算結果
+    try:
+        return {ws.title: _read_sheet(ws) for ws in wb.worksheets}
+    finally:
+        wb.close()  # 先釋放檔案,Windows 才能刪除暫存檔
+
+
+def read_excel_safely(path: Path) -> dict[str, Sheet]:
     """複製到暫存資料夾後讀取所有工作表,讀完立即刪除暫存檔。
 
     讀取失敗時拋出 ExcelReadError,訊息為簡短的中文原因。
@@ -57,20 +117,19 @@ def read_excel_safely(path: Path) -> dict[str, pd.DataFrame]:
         except OSError as exc:
             raise ExcelReadError(MSG_UNAVAILABLE) from exc
         try:
-            sheets = pd.read_excel(tmp_path, sheet_name=None, dtype=str, engine="openpyxl")
+            return _read_workbook(tmp_path)
         except Exception as exc:
             logger.warning("無法讀取 %s:%r", path.name, exc)
             raise ExcelReadError(_describe_failure(tmp_path)) from exc
         finally:
             tmp_path.unlink(missing_ok=True)
-    return {name: df.fillna("") for name, df in sheets.items()}
 
 
 # 依檔案路徑快取讀取結果(成功為工作表、失敗為 ExcelReadError),檔案變動才重讀
-_cache: dict[Path, tuple[tuple[float, int], dict[str, pd.DataFrame] | ExcelReadError]] = {}
+_cache: dict[Path, tuple[tuple[float, int], dict[str, Sheet] | ExcelReadError]] = {}
 
 
-def load_category(data_dir: Path, category: str) -> dict[str, pd.DataFrame]:
+def load_category(data_dir: Path, category: str) -> dict[str, Sheet]:
     """讀取某分類;檔案未變動(修改時間與大小相同)時使用快取。"""
     if category not in list_categories(data_dir):
         raise KeyError(category)
@@ -114,14 +173,15 @@ def search(
     category: str | None = None,
     max_results: int = 500,
 ) -> dict:
-    """在指定分類(或全部分類)中搜尋包含關鍵字的列,不分大小寫。
+    """在指定分類(或全部分類)中搜尋包含關鍵字的列。
 
+    不分大小寫、/ 與 - 視為相同、忽略數字間的千分位逗號。
     讀不了的檔案會略過並列在 errors,不影響其他檔案。
     """
-    query = query.strip()
+    needle = normalize(query.strip())
     results: list[dict] = []
     errors: list[dict] = []
-    if not query:
+    if not needle:
         return {"results": results, "errors": errors}
     categories = [category] if category else list_categories(data_dir)
     remaining = max_results
@@ -131,22 +191,22 @@ def search(
         except ExcelReadError as exc:
             errors.append({"category": cat, "error": str(exc)})
             continue
-        for sheet_name, df in sheets.items():
-            if df.empty or remaining <= 0:
+        for sheet_name, sheet in sheets.items():
+            if remaining <= 0:
+                break
+            if not sheet.rows:
                 continue
-            mask = df.apply(
-                lambda col: col.astype(str).str.contains(query, case=False, regex=False)
-            ).any(axis=1)
-            matched = df[mask].head(remaining)
-            if matched.empty:
+            hits = sheet.haystack.str.contains(needle, regex=False)
+            indexes = hits[hits].index[:remaining]
+            if len(indexes) == 0:
                 continue
-            remaining -= len(matched)
+            remaining -= len(indexes)
             results.append(
                 {
                     "category": cat,
                     "sheet": sheet_name,
-                    "columns": [str(c) for c in df.columns],
-                    "rows": matched.astype(str).values.tolist(),
+                    "columns": sheet.columns,
+                    "rows": [sheet.rows[i] for i in indexes],
                 }
             )
     return {"results": results, "errors": errors}

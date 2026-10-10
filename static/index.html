@@ -50,11 +50,19 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// 與後端搜尋規則一致:/ 與 - 視為相同、數字間可有千分位逗號
+function highlightPattern(q) {
+  const chars = [...escapeHtml(q)];
+  return chars.map((c, i) => {
+    const part = c === "/" || c === "-" ? "[/-]" : c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return /\d/.test(c) && /\d/.test(chars[i + 1] || "") ? part + ",?" : part;
+  }).join("");
+}
+
 function highlight(text, q) {
   const safe = escapeHtml(text);
   if (!q) return safe;
-  const pattern = escapeHtml(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return safe.replace(new RegExp(pattern, "gi"), (m) => `<mark>${m}</mark>`);
+  return safe.replace(new RegExp(highlightPattern(q), "gi"), (m) => `<mark>${m}</mark>`);
 }
 
 function renderNotice(errors) {
