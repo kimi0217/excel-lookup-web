@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 import shutil
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.utils import column_index_from_string
 
 from cell_format import display_value, normalize
@@ -78,10 +79,26 @@ _MERGE_REF = re.compile(rb'<(?:\w+:)?mergeCell\b[^>]*?\bref="([A-Z]+)(\d+)(?::([
 TYPE_SAMPLE_ROWS = 60  # 只記錄前 60 列的儲存格型別,供偵測表頭使用
 
 
+# openpyxl 唯讀工作表記錄 XML 位置的內部屬性(非公開 API,升級 openpyxl 後可能改名)
+SHEET_PATH_ATTR = "_worksheet_path"
+MSG_MERGE_UNSUPPORTED = (
+    "目前的 openpyxl 版本取不到合併儲存格範圍(內部屬性 %s 不存在),"
+    "合併儲存格將不會填入值;請改回 requirements.txt 鎖定的版本"
+)
+_merge_warning_logged = False
+
+
 def _merge_ranges(archive: zipfile.ZipFile, ws) -> list[Merge]:
-    """讀取工作表的合併範圍。openpyxl 唯讀模式不提供,直接從工作表 XML 取得。"""
-    sheet_path = getattr(ws, "_worksheet_path", None)
+    """讀取工作表的合併範圍。openpyxl 唯讀模式不提供,直接從工作表 XML 取得。
+
+    取不到時回傳空清單(不當掉),並記錄一次警告。
+    """
+    global _merge_warning_logged
+    sheet_path = getattr(ws, SHEET_PATH_ATTR, None)
     if not sheet_path:
+        if not _merge_warning_logged:
+            logger.warning(MSG_MERGE_UNSUPPORTED, SHEET_PATH_ATTR)
+            _merge_warning_logged = True
         return []
     try:
         xml = archive.read(sheet_path.lstrip("/"))
@@ -97,6 +114,22 @@ def _merge_ranges(archive: zipfile.ZipFile, ws) -> list[Merge]:
             int(r2) - 1, column_index_from_string(c2.decode()) - 1,
         ))
     return merges
+
+
+def merge_support_ok() -> bool:
+    """在記憶體中建立含合併儲存格的活頁簿,確認目前的 openpyxl 取得到合併範圍。"""
+    wb = Workbook()
+    wb.active.merge_cells("A1:B2")
+    buf = io.BytesIO()
+    wb.save(buf)
+    ro = load_workbook(buf, read_only=True)
+    try:
+        if not getattr(ro.worksheets[0], SHEET_PATH_ATTR, None):
+            return False
+        with zipfile.ZipFile(buf) as archive:
+            return _merge_ranges(archive, ro.worksheets[0]) == [Merge(0, 0, 1, 1)]
+    finally:
+        ro.close()
 
 
 def _read_sheet(ws, merges: list[Merge]) -> Sheet:

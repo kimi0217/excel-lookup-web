@@ -97,3 +97,15 @@ def test_index_page(client):
     res = client.get("/")
     assert res.status_code == 200
     assert "Excel 查詢" in res.text
+
+
+def test_config_with_bom_and_windows_paths(tmp_path, monkeypatch):
+    import app
+
+    (tmp_path / "config.json").write_text(
+        '{"data_dir": "D:\\\\共用\\\\Excel", "port": 9000}', encoding="utf-8-sig"
+    )
+    monkeypatch.setattr(app, "BASE_DIR", tmp_path)
+    config = app.load_config()
+    assert config["port"] == 9000
+    assert str(config["data_dir"]).endswith("Excel")
