@@ -27,7 +27,8 @@ def load_config() -> dict:
     for name in ("config.json", "config.example.json"):
         path = BASE_DIR / name
         if path.is_file():
-            config = json.loads(path.read_text(encoding="utf-8"))
+            # utf-8-sig:Windows 記事本可能存成含 BOM 的 UTF-8
+            config = json.loads(path.read_text(encoding="utf-8-sig"))
             break
     else:
         config = {}
@@ -68,6 +69,8 @@ def create_app(config: dict | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        if not excel_reader.merge_support_ok():
+            logger.warning(excel_reader.MSG_MERGE_UNSUPPORTED, excel_reader.SHEET_PATH_ATTR)
         tasks = [asyncio.create_task(reload_loop(catalog, reload_interval))]
         if backup_dir:
             tasks.append(asyncio.create_task(backup_loop(data_dir, backup_dir, keep_days)))
@@ -100,5 +103,6 @@ def create_app(config: dict | None = None) -> FastAPI:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = load_config()
     uvicorn.run(create_app(cfg), host=cfg.get("host", "0.0.0.0"), port=cfg.get("port", 8000))
