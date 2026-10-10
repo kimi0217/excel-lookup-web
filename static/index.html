@@ -24,6 +24,9 @@
   th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
   th { background: #f1f2f4; }
   mark { background: var(--hit); }
+  #notice { display: none; background: #fff7ed; border: 1px solid #fdba74; color: #9a3412; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 14px; }
+  #notice ul { margin: 4px 0 0; padding-left: 20px; }
+  option:disabled { color: #9ca3af; }
 </style>
 </head>
 <body>
@@ -37,6 +40,7 @@
 </header>
 <main>
   <div id="status">請輸入關鍵字開始搜尋</div>
+  <div id="notice"></div>
   <div id="results"></div>
 </main>
 <script>
@@ -53,19 +57,34 @@ function highlight(text, q) {
   return safe.replace(new RegExp(pattern, "gi"), (m) => `<mark>${m}</mark>`);
 }
 
+function renderNotice(errors) {
+  const box = $("notice");
+  if (!errors.length) { box.style.display = "none"; box.innerHTML = ""; return; }
+  box.innerHTML = "以下檔案無法讀取,已略過:<ul>" +
+    errors.map((e) => `<li>${escapeHtml(e.category)}:${escapeHtml(e.error)}</li>`).join("") + "</ul>";
+  box.style.display = "block";
+}
+
 async function loadCategories() {
   try {
     const res = await fetch("/api/categories");
     const cats = await res.json();
+    const select = $("category");
+    const current = select.value;
+    select.length = 1;  // 保留「全部分類」
     for (const c of cats) {
       const opt = document.createElement("option");
-      opt.value = c;
-      opt.textContent = c;
-      $("category").appendChild(opt);
+      opt.value = c.name;
+      opt.textContent = c.error ? `${c.name}(${c.error})` : c.name;
+      opt.disabled = Boolean(c.error);
+      select.appendChild(opt);
     }
+    if (cats.some((c) => c.name === current && !c.error)) select.value = current;
     if (cats.length === 0) $("status").textContent = "資料夾中沒有任何 Excel 檔案";
+    return cats;
   } catch {
     $("status").textContent = "無法載入分類";
+    return [];
   }
 }
 
@@ -80,7 +99,10 @@ async function doSearch(e) {
   try {
     const res = await fetch(`/api/search?${params}`);
     if (!res.ok) throw new Error((await res.json()).detail || "搜尋失敗");
-    render(await res.json(), q);
+    const data = await res.json();
+    render(data.results, q);
+    renderNotice(data.errors);
+    if (data.errors.length) loadCategories();  // 讓下拉選單標示新發現的壞檔
   } catch (err) {
     $("status").textContent = `錯誤:${err.message}`;
     $("results").innerHTML = "";

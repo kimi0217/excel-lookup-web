@@ -67,14 +67,19 @@ def create_app(config: dict | None = None) -> FastAPI:
         return FileResponse(STATIC_DIR / "index.html")
 
     @app.get("/api/categories")
-    def categories() -> list[str]:
-        return excel_reader.list_categories(data_dir)
+    def categories() -> list[dict]:
+        """分類清單;已知讀取失敗的檔案附上原因。"""
+        errors = excel_reader.category_errors(data_dir)
+        return [
+            {"name": name, "error": errors.get(name)}
+            for name in excel_reader.list_categories(data_dir)
+        ]
 
     @app.get("/api/search")
     def search(
         q: str = Query("", description="搜尋關鍵字"),
         category: str | None = Query(None, description="分類名稱,留空表示全部"),
-    ) -> list[dict]:
+    ) -> dict:
         if category and category not in excel_reader.list_categories(data_dir):
             raise HTTPException(status_code=404, detail="找不到此分類")
         return excel_reader.search(data_dir, q, category or None, max_results)
