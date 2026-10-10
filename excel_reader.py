@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -131,89 +132,99 @@ def read_excel_safely(path: Path, include_hidden: bool = False) -> dict[str, She
             tmp_path.unlink(missing_ok=True)
 
 
-# 依檔案路徑快取讀取結果(成功為工作表、失敗為 ExcelReadError),檔案變動才重讀
-_cache: dict[Path, tuple[tuple[float, int, bool], dict[str, Sheet] | ExcelReadError]] = {}
+@dataclass
+class _Entry:
+    key: tuple[float, int]  # 讀取時檔案的修改時間與大小,用來偵測變動
+    sheets: dict[str, Sheet]
+    error: str | None = None
 
 
-def load_category(data_dir: Path, category: str, include_hidden: bool = False) -> dict[str, Sheet]:
-    """讀取某分類;檔案未變動(修改時間與大小相同)時使用快取。"""
-    if category not in list_categories(data_dir):
-        raise KeyError(category)
-    path = data_dir / f"{category}.xlsx"
-    try:
-        stat = path.stat()
-    except OSError as exc:  # 列出後到讀取前被刪除或改名
-        raise ExcelReadError(MSG_UNAVAILABLE) from exc
-    key = (stat.st_mtime, stat.st_size, include_hidden)
-    cached = _cache.get(path)
-    if cached and cached[0] == key:
-        result = cached[1]
-    else:
-        try:
-            result = read_excel_safely(path, include_hidden)
-        except ExcelReadError as exc:
-            result = exc
-        _cache[path] = (key, result)
-    if isinstance(result, ExcelReadError):
-        raise result
-    return result
+class Catalog:
+    """資料夾中所有 Excel 的讀取結果。
 
-
-def category_errors(data_dir: Path) -> dict[str, str]:
-    """回傳已知讀取失敗的分類與原因(只包含已嘗試讀取過的檔案)。"""
-    errors = {}
-    for category in list_categories(data_dir):
-        path = data_dir / f"{category}.xlsx"
-        cached = _cache.get(path)
-        if not cached or not isinstance(cached[1], ExcelReadError):
-            continue
-        stat = path.stat()
-        if cached[0][:2] == (stat.st_mtime, stat.st_size):
-            errors[category] = str(cached[1])
-    return errors
-
-
-def search(
-    data_dir: Path,
-    query: str,
-    category: str | None = None,
-    max_results: int = 500,
-    include_hidden: bool = False,
-) -> dict:
-    """在指定分類(或全部分類)中搜尋包含關鍵字的列。
-
-    不分大小寫、/ 與 - 視為相同、忽略數字間的千分位逗號。
-    讀不了的檔案會略過並列在 errors,不影響其他檔案。
+    refresh() 由背景執行緒定期呼叫,讀取新增或變動的檔案;搜尋只使用已載入的資料,
+    不會在搜尋時讀檔。檔案變動後重新載入完成前,搜尋仍使用舊資料。
     """
-    needle = normalize(query.strip())
-    results: list[dict] = []
-    errors: list[dict] = []
-    if not needle:
-        return {"results": results, "errors": errors}
-    categories = [category] if category else list_categories(data_dir)
-    remaining = max_results
-    for cat in categories:
-        try:
-            sheets = load_category(data_dir, cat, include_hidden)
-        except ExcelReadError as exc:
-            errors.append({"category": cat, "error": str(exc)})
-            continue
-        for sheet_name, sheet in sheets.items():
-            if remaining <= 0:
-                break
-            if not sheet.rows:
+
+    def __init__(self, data_dir: Path, include_hidden: bool = False) -> None:
+        self.data_dir = data_dir
+        self.include_hidden = include_hidden
+        self._entries: dict[str, _Entry] = {}
+        self._refresh_lock = threading.Lock()
+
+    def refresh(self) -> None:
+        """載入新增或變動的檔案(小檔優先),移除已刪除的檔案。"""
+        with self._refresh_lock:
+            names = list_categories(self.data_dir)
+            for gone in set(self._entries) - set(names):
+                del self._entries[gone]
+            pending = []
+            for name in names:
+                try:
+                    stat = (self.data_dir / f"{name}.xlsx").stat()
+                except OSError:  # 列出後被刪除或改名,下次再處理
+                    continue
+                key = (stat.st_mtime, stat.st_size)
+                entry = self._entries.get(name)
+                if entry is None or entry.key != key:
+                    pending.append((stat.st_size, name, key))
+            for _, name, key in sorted(pending):
+                path = self.data_dir / f"{name}.xlsx"
+                try:
+                    self._entries[name] = _Entry(key, read_excel_safely(path, self.include_hidden))
+                except ExcelReadError as exc:
+                    self._entries[name] = _Entry(key, {}, str(exc))
+
+    def categories(self) -> list[dict]:
+        """分類清單;status 為 ok、error(附 error 原因)或 loading(尚未載入)。"""
+        result = []
+        for name in list_categories(self.data_dir):
+            entry = self._entries.get(name)
+            if entry is None:
+                result.append({"name": name, "status": "loading", "error": None})
+            elif entry.error:
+                result.append({"name": name, "status": "error", "error": entry.error})
+            else:
+                result.append({"name": name, "status": "ok", "error": None})
+        return result
+
+    def search(self, query: str, category: str | None = None, max_results: int = 500) -> dict:
+        """在指定分類(或全部分類)中搜尋包含關鍵字的列。
+
+        不分大小寫、/ 與 - 視為相同、忽略數字間的千分位逗號。
+        讀不了的檔案列在 errors,尚未載入完成的檔案列在 loading,都不影響其他檔案。
+        """
+        needle = normalize(query.strip())
+        results: list[dict] = []
+        errors: list[dict] = []
+        loading: list[str] = []
+        if not needle:
+            return {"results": results, "errors": errors, "loading": loading}
+        remaining = max_results
+        for cat in [category] if category else list_categories(self.data_dir):
+            entry = self._entries.get(cat)
+            if entry is None:
+                loading.append(cat)
                 continue
-            hits = sheet.haystack.str.contains(needle, regex=False)
-            indexes = hits[hits].index[:remaining]
-            if len(indexes) == 0:
+            if entry.error:
+                errors.append({"category": cat, "error": entry.error})
                 continue
-            remaining -= len(indexes)
-            results.append(
-                {
-                    "category": cat,
-                    "sheet": sheet_name,
-                    "columns": sheet.columns,
-                    "rows": [sheet.rows[i] for i in indexes],
-                }
-            )
-    return {"results": results, "errors": errors}
+            for sheet_name, sheet in entry.sheets.items():
+                if remaining <= 0:
+                    break
+                if not sheet.rows:
+                    continue
+                hits = sheet.haystack.str.contains(needle, regex=False)
+                indexes = hits[hits].index[:remaining]
+                if len(indexes) == 0:
+                    continue
+                remaining -= len(indexes)
+                results.append(
+                    {
+                        "category": cat,
+                        "sheet": sheet_name,
+                        "columns": sheet.columns,
+                        "rows": [sheet.rows[i] for i in indexes],
+                    }
+                )
+        return {"results": results, "errors": errors, "loading": loading}

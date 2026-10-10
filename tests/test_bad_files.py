@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 import excel_reader
-from app import create_app
+from conftest import search, loaded_client
 
 OLE_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
 
@@ -43,13 +43,12 @@ def data_dir(tmp_path: Path) -> Path:
     write_encrypted(d / "加密.xlsx")
     write_corrupted(d / "損毀.xlsx")
     write_legacy_xls(d / "舊版.xlsx")
-    excel_reader._cache.clear()
     return d
 
 
 @pytest.fixture
 def client(data_dir: Path) -> TestClient:
-    return TestClient(create_app({"data_dir": data_dir}), raise_server_exceptions=False)
+    return loaded_client({"data_dir": data_dir}, raise_server_exceptions=False)
 
 
 @pytest.mark.parametrize(
@@ -84,7 +83,7 @@ def test_unexpected_error_only_affects_that_file(data_dir, monkeypatch):
         return real_read(path, *args, **kwargs)
 
     monkeypatch.setattr(excel_reader, "load_workbook", flaky_read)
-    result = excel_reader.search(data_dir, "王小明")
+    result = search(data_dir, "王小明")
     assert [g["category"] for g in result["results"]] == ["員工"]
     assert {"category": "設備", "error": excel_reader.MSG_CORRUPTED} in result["errors"]
 
@@ -116,24 +115,26 @@ def test_search_bad_category_returns_reason(client):
     assert res.json() == {
         "results": [],
         "errors": [{"category": "損毀", "error": excel_reader.MSG_CORRUPTED}],
+        "loading": [],
     }
 
 
-def test_categories_mark_failed_files_after_read(client):
-    client.get("/api/search", params={"q": "任何字"})
-    cats = {c["name"]: c["error"] for c in client.get("/api/categories").json()}
+def test_categories_mark_failed_files(client):
+    # 預先載入後,不必先搜尋就能在分類清單看到哪些檔案讀取失敗
+    cats = {c["name"]: (c["status"], c["error"]) for c in client.get("/api/categories").json()}
     assert cats == {
-        "加密": excel_reader.MSG_ENCRYPTED,
-        "員工": None,
-        "損毀": excel_reader.MSG_CORRUPTED,
-        "舊版": excel_reader.MSG_LEGACY_XLS,
-        "設備": None,
+        "加密": ("error", excel_reader.MSG_ENCRYPTED),
+        "員工": ("ok", None),
+        "損毀": ("error", excel_reader.MSG_CORRUPTED),
+        "舊版": ("error", excel_reader.MSG_LEGACY_XLS),
+        "設備": ("ok", None),
     }
 
 
 def test_fixed_file_is_read_again(data_dir, client):
     client.get("/api/search", params={"q": "王小明"})
     make_xlsx(data_dir / "損毀.xlsx", [["項目"], ["已修復 王小明"]])
+    client.app.state.catalog.refresh()
     body = client.get("/api/search", params={"q": "已修復"}).json()
     assert [g["category"] for g in body["results"]] == ["損毀"]
     assert all(e["category"] != "損毀" for e in body["errors"])

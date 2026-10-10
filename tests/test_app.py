@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 import excel_reader
-from app import create_app
+from conftest import search, loaded_client
 
 
 def make_xlsx(path: Path, rows: list[list], sheet: str = "工作表1") -> None:
@@ -29,13 +29,12 @@ def data_dir(tmp_path: Path) -> Path:
     make_xlsx(d / "員工.xlsx", [["姓名", "部門"], ["王小明", "資訊部"], ["李小華", "業務部"]])
     make_xlsx(d / "設備.xlsx", [["編號", "名稱"], ["A001", "筆電"], ["A002", "螢幕"]])
     (d / "~$員工.xlsx").write_bytes(b"lock")
-    excel_reader._cache.clear()
     return d
 
 
 @pytest.fixture
 def client(data_dir: Path) -> TestClient:
-    return TestClient(create_app({"data_dir": data_dir}))
+    return loaded_client({"data_dir": data_dir})
 
 
 def test_list_categories_skips_lock_files(data_dir):
@@ -60,7 +59,7 @@ def test_temp_copy_is_deleted(data_dir, tmp_path, monkeypatch):
 
 
 def test_search_all_categories(data_dir):
-    results = excel_reader.search(data_dir, "a00")["results"]
+    results = search(data_dir, "a00")["results"]
     assert len(results) == 1
     assert results[0]["category"] == "設備"
     assert results[0]["columns"] == ["編號", "名稱"]
@@ -68,14 +67,14 @@ def test_search_all_categories(data_dir):
 
 
 def test_search_respects_max_results(data_dir):
-    results = excel_reader.search(data_dir, "A00", max_results=1)["results"]
+    results = search(data_dir, "A00", max_results=1)["results"]
     assert sum(len(g["rows"]) for g in results) == 1
 
 
 def test_api_categories(client):
     assert client.get("/api/categories").json() == [
-        {"name": "員工", "error": None},
-        {"name": "設備", "error": None},
+        {"name": "員工", "status": "ok", "error": None},
+        {"name": "設備", "status": "ok", "error": None},
     ]
 
 
@@ -91,7 +90,7 @@ def test_api_rejects_unknown_category(client):
 
 
 def test_api_empty_query(client):
-    assert client.get("/api/search", params={"q": "  "}).json() == {"results": [], "errors": []}
+    assert client.get("/api/search", params={"q": "  "}).json() == {"results": [], "errors": [], "loading": []}
 
 
 def test_index_page(client):

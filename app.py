@@ -46,6 +46,16 @@ async def backup_loop(data_dir: Path, backup_dir: Path, keep_days: int) -> None:
         await asyncio.sleep(BACKUP_CHECK_SECONDS)
 
 
+async def reload_loop(catalog: excel_reader.Catalog, interval: float) -> None:
+    """啟動時先載入全部檔案,之後定期檢查並重新載入有變動的檔案。"""
+    while True:
+        try:
+            await asyncio.to_thread(catalog.refresh)
+        except Exception:
+            logger.exception("載入 Excel 失敗")
+        await asyncio.sleep(interval)
+
+
 def create_app(config: dict | None = None) -> FastAPI:
     config = config or load_config()
     data_dir: Path = config["data_dir"]
@@ -53,15 +63,20 @@ def create_app(config: dict | None = None) -> FastAPI:
     include_hidden: bool = config.get("include_hidden_sheets", False)
     backup_dir: Path | None = config.get("backup_dir")
     keep_days: int = config.get("backup_keep_days", 30)
+    reload_interval: float = config.get("reload_interval_seconds", 10)
+    catalog = excel_reader.Catalog(data_dir, include_hidden)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        task = asyncio.create_task(backup_loop(data_dir, backup_dir, keep_days)) if backup_dir else None
+        tasks = [asyncio.create_task(reload_loop(catalog, reload_interval))]
+        if backup_dir:
+            tasks.append(asyncio.create_task(backup_loop(data_dir, backup_dir, keep_days)))
         yield
-        if task:
+        for task in tasks:
             task.cancel()
 
     app = FastAPI(title="Excel 查詢", lifespan=lifespan)
+    app.state.catalog = catalog
 
     @app.get("/")
     def index() -> FileResponse:
@@ -69,12 +84,8 @@ def create_app(config: dict | None = None) -> FastAPI:
 
     @app.get("/api/categories")
     def categories() -> list[dict]:
-        """分類清單;已知讀取失敗的檔案附上原因。"""
-        errors = excel_reader.category_errors(data_dir)
-        return [
-            {"name": name, "error": errors.get(name)}
-            for name in excel_reader.list_categories(data_dir)
-        ]
+        """分類清單與載入狀態(ok / error / loading)。"""
+        return catalog.categories()
 
     @app.get("/api/search")
     def search(
@@ -83,7 +94,7 @@ def create_app(config: dict | None = None) -> FastAPI:
     ) -> dict:
         if category and category not in excel_reader.list_categories(data_dir):
             raise HTTPException(status_code=404, detail="找不到此分類")
-        return excel_reader.search(data_dir, q, category or None, max_results, include_hidden)
+        return catalog.search(q, category or None, max_results)
 
     return app
 

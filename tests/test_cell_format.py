@@ -6,6 +6,7 @@ from openpyxl import Workbook
 
 import excel_reader
 from cell_format import display_value, format_number, normalize
+from conftest import search
 
 
 @pytest.mark.parametrize(
@@ -73,7 +74,6 @@ def data_dir(tmp_path: Path) -> Path:
     ws["D2"].number_format = "yyyy/mm/dd hh:mm"
     ws["E2"].number_format = "#,##0"
     wb.save(d / "料號.xlsx")
-    excel_reader._cache.clear()
     return d
 
 
@@ -84,10 +84,10 @@ def test_read_restores_display(data_dir):
 
 @pytest.mark.parametrize("query", ["00123", "2026/01/15", "2026-01-15", "2026/12/31 17:30", "1234567", "1,234,567"])
 def test_search_matches_displayed_text(data_dir, query):
-    results = excel_reader.search(data_dir, query)["results"]
+    results = search(data_dir, query)["results"]
     assert results and results[0]["rows"][0][1] == "螺絲"
 
 
 def test_search_does_not_match_across_cells(data_dir):
     # 「螺絲」與「2026」分屬相鄰儲存格,不應被當成連續文字
-    assert excel_reader.search(data_dir, "螺絲2026")["results"] == []
+    assert search(data_dir, "螺絲2026")["results"] == []
