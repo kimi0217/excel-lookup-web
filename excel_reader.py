@@ -8,7 +8,9 @@ import re
 import shutil
 import tempfile
 import math
+import stat as stat_module
 import threading
+import time
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -85,15 +87,39 @@ class Sheet:
         return np.concatenate([filled[::-1] if descending else filled, blank])
 
 
-def list_categories(data_dir: Path) -> list[str]:
-    """回傳資料夾中所有 .xlsx 的分類名稱(檔名去掉副檔名)。"""
+@dataclass(frozen=True)
+class FileStat:
+    path: Path
+    mtime: float
+    size: int
+
+
+def scan_folder(data_dir: Path) -> dict[str, FileStat]:
+    """列出資料夾中的 Excel(分類名稱 → 路徑、修改時間、大小),依名稱排序。
+
+    資料夾不存在或無法存取(例如網路共用資料夾斷線)時拋出 OSError。
+    """
     if not data_dir.is_dir():
+        raise FileNotFoundError(f"找不到資料夾:{data_dir}")
+    files: dict[str, FileStat] = {}
+    for path in data_dir.iterdir():
+        if path.suffix != ".xlsx" or path.name.startswith("~$"):  # 排除 Excel 開啟中的鎖定檔
+            continue
+        try:
+            info = path.stat()
+        except OSError:  # 列出後被刪除或改名,下次再處理
+            continue
+        if stat_module.S_ISREG(info.st_mode):
+            files[path.stem] = FileStat(path, info.st_mtime, info.st_size)
+    return dict(sorted(files.items()))
+
+
+def list_categories(data_dir: Path) -> list[str]:
+    """回傳資料夾中所有 Excel 的分類名稱;資料夾無法存取時回傳空清單。"""
+    try:
+        return list(scan_folder(data_dir))
+    except OSError:
         return []
-    return sorted(
-        p.stem
-        for p in data_dir.glob("*.xlsx")
-        if p.is_file() and not p.name.startswith("~$")  # 排除 Excel 開啟中的鎖定檔
-    )
 
 
 def _describe_failure(tmp_path: Path) -> str:
@@ -228,35 +254,63 @@ class Catalog:
 
     refresh() 由背景執行緒定期呼叫,讀取新增或變動的檔案;搜尋只使用已載入的資料,
     不會在搜尋時讀檔。檔案變動後重新載入完成前,搜尋仍使用舊資料。
+    請求(categories、search 等)完全不存取資料夾:網路資料夾斷線時存取可能卡住數秒。
+    資料夾暫時無法連線時保留已載入的資料,恢復後自動更新。
     """
 
     def __init__(self, data_dir: Path, include_hidden: bool = False) -> None:
         self.data_dir = data_dir
         self.include_hidden = include_hidden
         self._entries: dict[str, _Entry] = {}
+        self._files: dict[str, FileStat] = {}  # 最後一次成功列出的檔案
         self._refresh_lock = threading.Lock()
+        self.folder_ok = False
+        self.last_success: float | None = None  # 最後一次成功讀取資料夾的時間
+        self._offline_logged = False
+        try:
+            self._files = scan_folder(data_dir)  # 先列出檔名,載入完成前就能顯示「載入中」
+            self.folder_ok = True
+        except OSError:
+            pass
+
+    def has(self, name: str) -> bool:
+        return name in self._files
+
+    def folder_status(self) -> dict:
+        """資料夾連線狀態,以及最後一次成功讀取的時間。"""
+        last = datetime.fromtimestamp(self.last_success).strftime("%Y-%m-%d %H:%M") if self.last_success else None
+        return {"ok": self.folder_ok, "last_success": last}
 
     def refresh(self) -> None:
         """載入新增或變動的檔案(小檔優先),移除已刪除的檔案。
 
         讀取失敗的檔案每次都重讀(可能只是暫時被鎖定或網路不穩),同樣的錯誤只記錄一次。
+        資料夾無法連線時不更動已載入的資料。
         """
         with self._refresh_lock:
-            names = list_categories(self.data_dir)
-            for gone in set(self._entries) - set(names):
+            try:
+                files = scan_folder(self.data_dir)
+            except OSError as exc:
+                self.folder_ok = False
+                if not self._offline_logged:
+                    logger.warning("Excel 資料夾無法連線,保留目前已載入的資料:%s", exc)
+                    self._offline_logged = True
+                return
+            if self._offline_logged:
+                logger.info("Excel 資料夾已恢復連線")
+                self._offline_logged = False
+            self.folder_ok = True
+            self._files = files
+            for gone in set(self._entries) - set(files):
                 del self._entries[gone]
             pending = []
-            for name in names:
-                try:
-                    stat = (self.data_dir / f"{name}.xlsx").stat()
-                except OSError:  # 列出後被刪除或改名,下次再處理
-                    continue
-                key = (stat.st_mtime, stat.st_size)
+            for name, info in files.items():
+                key = (info.mtime, info.size)
                 entry = self._entries.get(name)
                 if entry is None or entry.key != key or entry.error:
-                    pending.append((stat.st_size, name, key))
+                    pending.append((info.size, name, key))
             for _, name, key in sorted(pending):
-                path = self.data_dir / f"{name}.xlsx"
+                path = files[name].path
                 previous = self._entries.get(name)
                 try:
                     self._entries[name] = _Entry(key, read_excel_safely(path, self.include_hidden))
@@ -267,16 +321,13 @@ class Catalog:
                 else:
                     if previous is not None and previous.error:
                         logger.info("已可讀取 %s", path.name)
+            self.last_success = time.time()
 
     def _summary(self, name: str) -> dict:
         """單一檔案的狀態摘要:status 為 ok、error(附 error 原因)或 loading(尚未載入)。"""
         entry = self._entries.get(name)
-        mtime = entry.key[0] if entry else None
-        if mtime is None:
-            try:
-                mtime = (self.data_dir / f"{name}.xlsx").stat().st_mtime
-            except OSError:
-                mtime = None
+        info = self._files.get(name)
+        mtime = entry.key[0] if entry else (info.mtime if info else None)
         summary = {
             "name": name,
             "status": "loading" if entry is None else ("error" if entry.error else "ok"),
@@ -292,11 +343,11 @@ class Catalog:
 
     def categories(self) -> list[dict]:
         """檔案清單:名稱、狀態、筆數、工作表數、最後更新時間(檔案修改時間)。"""
-        return [self._summary(name) for name in list_categories(self.data_dir)]
+        return [self._summary(name) for name in self._files]
 
     def file_info(self, name: str) -> dict:
         """單一檔案的摘要與工作表清單;檔案不存在時拋出 KeyError。"""
-        if name not in list_categories(self.data_dir):
+        if name not in self._files:
             raise KeyError(name)
         info = self._summary(name)
         entry = self._entries.get(name)
@@ -373,7 +424,7 @@ class Catalog:
         if not keywords:
             return {"results": results, "errors": errors, "loading": loading}
         remaining = max_results
-        for cat in [category] if category else list_categories(self.data_dir):
+        for cat in [category] if category else list(self._files):
             entry = self._entries.get(cat)
             if entry is None:
                 loading.append(cat)

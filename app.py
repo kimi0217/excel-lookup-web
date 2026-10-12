@@ -90,9 +90,9 @@ def create_app(config: dict | None = None) -> FastAPI:
         return FileResponse(STATIC_DIR / "index.html")
 
     @app.get("/api/categories")
-    def categories() -> list[dict]:
-        """分類清單與載入狀態(ok / error / loading)。"""
-        return catalog.categories()
+    def categories() -> dict:
+        """資料夾連線狀態,以及檔案清單與各檔案的載入狀態(ok / error / loading)。"""
+        return {"folder": catalog.folder_status(), "files": catalog.categories()}
 
     @app.get("/api/files/{name}")
     def file_info(name: str) -> dict:
@@ -127,7 +127,7 @@ def create_app(config: dict | None = None) -> FastAPI:
         q: str = Query("", description="搜尋關鍵字"),
         category: str | None = Query(None, description="分類名稱,留空表示全部"),
     ) -> dict:
-        if category and category not in excel_reader.list_categories(data_dir):
+        if category and not catalog.has(category):
             raise HTTPException(status_code=404, detail="找不到此分類")
         return catalog.search(q, category or None, max_results)
 

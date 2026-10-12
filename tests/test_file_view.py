@@ -50,7 +50,7 @@ def rows(client, **params) -> dict:
 # ---------- 檔案列表 ----------
 
 def test_categories_include_counts(client):
-    cats = {c["name"]: c for c in client.get("/api/categories").json()}
+    cats = {c["name"]: c for c in client.get("/api/categories").json()["files"]}
     assert (cats["醫材"]["rows"], cats["醫材"]["sheets"]) == (251, 2)  # 隱藏工作表不算
     assert cats["損毀"]["status"] == "error" and cats["損毀"]["rows"] is None
     assert cats["損毀"]["updated"]  # 讀取失敗也顯示檔案更新時間

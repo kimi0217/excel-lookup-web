@@ -97,7 +97,10 @@ def test_port_in_use():
         assert common.port_in_use(port, "127.0.0.1")
 
 
-@pytest.mark.parametrize(("body", "expected"), [(b"[]", True), (b'{"other": 1}', False), (b"<html>", False)])
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [(b'{"folder": {"ok": true}, "files": []}', True), (b"[]", False), (b'{"other": 1}', False), (b"<html>", False)],
+)
 def test_is_our_service(body, expected):
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
