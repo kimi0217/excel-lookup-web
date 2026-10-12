@@ -280,7 +280,7 @@ netsh advfirewall firewall add rule name="Excel 查詢網頁" dir=in action=allo
 程式的記錄會顯示在啟動視窗中;開機自動啟動時則寫到程式資料夾中的 `app.log`(超過 2 MB 自動輪替,保留 3 份)。安裝過程的完整記錄在 `install.log`。需要留意的訊息:
 
 - `無法讀取 XXX.xlsx`:該檔案有密碼保護、已損毀或是舊版 .xls,網頁上也會顯示原因。其他檔案不受影響。
-- `取不到合併儲存格範圍`:openpyxl 版本與 requirements.txt 不同,合併儲存格不會填入值。請重新執行 `pip install -r requirements.txt`。
+- `找不到工作表 XML`:檔案結構不標準(通常是其他程式產生的檔案),該工作表的合併儲存格不會填入值、隱藏的列與欄會顯示。用 Excel 開啟後另存新檔即可。
 - `header_overrides ...`:手動指定表頭的設定有誤(檔案或工作表不存在、列號不正確),該項設定未套用。
 - `自動備份失敗`:檢查 `backup_dir` 是否存在、是否有寫入權限、磁碟空間是否足夠。
 
@@ -294,7 +294,7 @@ venv/bin/pip install -r requirements.txt     # Windows:venv\Scripts\python.exe -
 venv/bin/pytest                              # Windows:venv\Scripts\python.exe -m pytest
 ```
 
-測試全部通過後重新啟動程式。requirements.txt 中的套件版本都已鎖定,**請不要自行升級套件**(尤其是 openpyxl,見下方限制);要升級時先在測試環境跑過 pytest。
+測試全部通過後重新啟動程式。requirements.txt 中的套件版本都已鎖定,**請不要自行升級套件**;要升級時先在測試環境跑過 pytest。
 
 ---
 
@@ -321,4 +321,3 @@ venv/bin/pytest                              # Windows:venv\Scripts\python.exe -
 - **表頭偵測可能判斷錯誤**:例如表頭有很多空白欄名、而資料列每格都有文字時,可能把第一筆資料當成表頭。遇到時在 `config.json` 的 `header_overrides` 指定表頭是第幾列(見[手動指定表頭列](#手動指定表頭列)),或在 Excel 中補齊欄位名稱。
 - **啟動或檔案變動後的幾秒內**,背景正在讀取大檔時,網頁回應可能變慢到約 1 秒;尚未載入完成的檔案會在網頁上顯示「載入中」。
 - **所有資料都載入記憶體**:Excel 總量很大時(數十萬列以上),請留意電腦記憶體。
-- **合併儲存格依賴 openpyxl 內部屬性**:升級 openpyxl 後可能失效(記錄中會出現警告,測試也會失敗),因此版本已鎖定。
