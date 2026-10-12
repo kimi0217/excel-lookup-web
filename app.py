@@ -42,10 +42,10 @@ def load_config(config_path: Path | None = None) -> dict:
     return config
 
 
-async def backup_loop(data_dir: Path, backup_dir: Path, keep_days: int) -> None:
+async def backup_loop(data_dir: Path, backup_dir: Path, keep_days: int, include_subfolders: bool) -> None:
     while True:
         try:
-            await asyncio.to_thread(backup.run_backup, data_dir, backup_dir, keep_days)
+            await asyncio.to_thread(backup.run_backup, data_dir, backup_dir, keep_days, include_subfolders=include_subfolders)
         except Exception:
             logger.exception("自動備份失敗")
         await asyncio.sleep(BACKUP_CHECK_SECONDS)
@@ -70,7 +70,12 @@ def create_app(config: dict | None = None) -> FastAPI:
     backup_dir: Path | None = config.get("backup_dir")
     keep_days: int = config.get("backup_keep_days", 30)
     reload_interval: float = config.get("reload_interval_seconds", 10)
-    catalog = excel_reader.Catalog(data_dir, include_hidden, include_hidden_rc)
+    include_subfolders: bool = config.get("include_subfolders", True)
+    catalog = excel_reader.Catalog(
+        data_dir, include_hidden, include_hidden_rc,
+        include_subfolders=include_subfolders,
+        exclude=[backup_dir] if backup_dir else [],  # 備份資料夾放在 data_dir 底下時不可當成資料
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -78,7 +83,7 @@ def create_app(config: dict | None = None) -> FastAPI:
             logger.warning(excel_reader.MSG_MERGE_UNSUPPORTED, excel_reader.SHEET_PATH_ATTR)
         tasks = [asyncio.create_task(reload_loop(catalog, reload_interval))]
         if backup_dir:
-            tasks.append(asyncio.create_task(backup_loop(data_dir, backup_dir, keep_days)))
+            tasks.append(asyncio.create_task(backup_loop(data_dir, backup_dir, keep_days, include_subfolders)))
         yield
         for task in tasks:
             task.cancel()
@@ -96,15 +101,8 @@ def create_app(config: dict | None = None) -> FastAPI:
         """資料夾連線狀態,以及檔案清單與各檔案的載入狀態(ok / error / loading)。"""
         return {"folder": catalog.folder_status(), "files": catalog.categories()}
 
-    @app.get("/api/files/{name}")
-    def file_info(name: str) -> dict:
-        """單一檔案的摘要與工作表清單。"""
-        try:
-            return catalog.file_info(name)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="找不到此檔案") from None
-
-    @app.get("/api/files/{name}/rows")
+    # 分類名稱可能包含 /(子資料夾),所以用 path 參數;.../rows 要先宣告才不會被當成檔名的一部分
+    @app.get("/api/files/{name:path}/rows")
     def file_rows(
         name: str,
         sheet: str | None = Query(None, description="工作表名稱,留空為第一個工作表"),
@@ -115,6 +113,8 @@ def create_app(config: dict | None = None) -> FastAPI:
         page_size: int = Query(100, ge=1, le=500),
     ) -> dict:
         """工作表的分頁資料,可篩選與排序;不帶關鍵字時回傳整份資料的第 page 頁。"""
+        if not catalog.has(name) and catalog.has(f"{name}/rows"):  # 子資料夾中檔名就是 rows 的檔案
+            return file_info(f"{name}/rows")
         try:
             return catalog.rows(name, sheet, q, sort, order == "desc", page, page_size)
         except KeyError:
@@ -123,6 +123,14 @@ def create_app(config: dict | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="找不到此工作表") from None
         except excel_reader.SortColumnNotFound:
             raise HTTPException(status_code=400, detail="排序欄位不存在") from None
+
+    @app.get("/api/files/{name:path}")
+    def file_info(name: str) -> dict:
+        """單一檔案的摘要與工作表清單。"""
+        try:
+            return catalog.file_info(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="找不到此檔案") from None
 
     @app.get("/api/search")
     def search(

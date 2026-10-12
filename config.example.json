@@ -7,5 +7,6 @@
   "max_results": 500,
   "include_hidden_sheets": false,
   "include_hidden_rows_columns": false,
+  "include_subfolders": true,
   "reload_interval_seconds": 10
 }
