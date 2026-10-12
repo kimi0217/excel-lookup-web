@@ -34,6 +34,27 @@ def venv_python(windowed: bool = False) -> Path:
     return ROOT / "venv" / "bin" / "python"
 
 
+def run_command(cmd: list[str]) -> tuple[int, str]:
+    """執行系統指令,回傳 (結束碼, 輸出文字)。Windows 指令的輸出使用系統的字碼頁。"""
+    try:
+        result = subprocess.run(cmd, capture_output=True)
+    except OSError as exc:
+        return 1, str(exc)
+    encoding = "oem" if IS_WINDOWS else "utf-8"
+    output = (result.stdout + result.stderr).decode(encoding, errors="replace").strip()
+    return result.returncode, output
+
+
+def is_windows_admin() -> bool:
+    """目前是否以系統管理員身分執行(已提高權限)。非 Windows 一律為 False。"""
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
 # ---------- 訊息 ----------
 
 def print_banner(lines: list[str]) -> None:

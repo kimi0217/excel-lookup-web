@@ -10,18 +10,7 @@ if not exist "venv\Scripts\python.exe" goto :fallback
 goto :done
 
 :fallback
-rem 沒有 venv 時（例如已刪除），直接用系統指令移除防火牆規則與排程工作
-netsh advfirewall firewall show rule name=ExcelLookupWeb >nul 2>&1
-if errorlevel 1 goto :fallback_task
-netsh advfirewall firewall delete rule name=ExcelLookupWeb >nul 2>&1
-if errorlevel 1 goto :firewall_failed
-echo 已移除防火牆規則 ExcelLookupWeb。
-goto :fallback_task
-
-:firewall_failed
-echo [注意] 無法移除防火牆規則 ExcelLookupWeb，請在此檔案上按滑鼠右鍵，選「以系統管理員身分執行」。
-
-:fallback_task
+rem 沒有 venv 時（例如已刪除），直接用工作排程器指令移除
 schtasks /Query /TN ExcelLookupWeb >nul 2>&1
 if errorlevel 1 (
   echo 目前沒有設定自動啟動，不需要取消。
