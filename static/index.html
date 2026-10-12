@@ -5,52 +5,166 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Excel 查詢</title>
 <style>
-  :root { --bg: #f7f7f8; --fg: #1f2328; --muted: #6b7280; --line: #d9dce1; --accent: #2563eb; --hit: #fde68a; }
+  :root {
+    --bg: #f5f6f8; --surface: #ffffff; --fg: #1f2933; --muted: #6b7280; --line: #e3e6ea;
+    --accent: #2563eb; --accent-soft: #e8efff; --zebra: #f8f9fb; --hover: #eef4ff; --hit: #fde68a;
+    --warn-bg: #fff7ed; --warn-line: #fdba74; --warn-fg: #9a3412; --head: #f1f3f6;
+    --radius: 10px;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: system-ui, "PingFang TC", "Microsoft JhengHei", sans-serif; background: var(--bg); color: var(--fg); }
-  header { padding: 16px; background: #fff; border-bottom: 1px solid var(--line); position: sticky; top: 0; }
-  h1 { margin: 0 0 12px; font-size: 20px; }
-  form { display: flex; gap: 8px; flex-wrap: wrap; }
-  select, input, button { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
-  input { flex: 1; min-width: 200px; }
-  button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; }
-  main { padding: 16px; }
-  #status { color: var(--muted); margin-bottom: 12px; }
-  section { background: #fff; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
-  section h2 { margin: 0; padding: 10px 12px; font-size: 15px; border-bottom: 1px solid var(--line); }
-  section h2 small { color: var(--muted); font-weight: normal; }
-  .scroll { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; font-size: 14px; }
-  th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
-  th { background: #f1f2f4; }
-  mark { background: var(--hit); }
-  #notice { display: none; background: #fff7ed; border: 1px solid #fdba74; color: #9a3412; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 14px; }
-  #notice ul { margin: 4px 0 0; padding-left: 20px; }
-  option:disabled { color: #9ca3af; }
+  html { font-size: 16px; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+    font-family: system-ui, -apple-system, "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+    background: var(--bg); color: var(--fg); line-height: 1.6;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button, input { font: inherit; }
+
+  /* 頂部列 */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--line);
+  }
+  .brand { font-size: 1.15rem; font-weight: 700; color: var(--fg); }
+  .brand:hover { text-decoration: none; }
+  .updated { color: var(--muted); font-size: 0.9rem; }
+
+  main { flex: 1; width: 100%; max-width: 1400px; margin: 0 auto; padding: 20px 24px 32px; }
+  footer {
+    padding: 16px 24px; text-align: center; color: var(--muted); font-size: 0.9rem;
+    border-top: 1px solid var(--line); background: var(--surface);
+  }
+
+  /* 共用元件 */
+  h1 { font-size: 1.4rem; margin: 0; line-height: 1.3; word-break: break-all; }
+  .field label { display: block; font-size: 0.9rem; color: var(--muted); margin-bottom: 4px; }
+  .input {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+    font-size: 1rem;
+  }
+  .input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .btn {
+    padding: 10px 18px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent);
+    color: #fff; cursor: pointer; white-space: nowrap;
+  }
+  .btn-plain { background: var(--surface); color: var(--fg); border-color: var(--line); }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .row { display: flex; gap: 8px; }
+  .muted { color: var(--muted); }
+  .notice {
+    background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn-fg);
+    border-radius: var(--radius); padding: 10px 14px; margin: 0 0 16px; font-size: 0.95rem;
+  }
+  .notice ul { margin: 4px 0 0; padding-left: 20px; }
+  .empty { padding: 40px 16px; text-align: center; color: var(--muted); }
+  .back { display: inline-block; margin-bottom: 8px; font-size: 0.95rem; }
+  mark { background: var(--hit); color: inherit; padding: 0 1px; border-radius: 2px; }
+
+  /* 首頁 */
+  .toolbar { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; margin-bottom: 16px; }
+  .summary { margin: 0 0 12px; color: var(--muted); font-size: 0.95rem; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+  .card {
+    display: block; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px; color: var(--fg); transition: border-color .15s, box-shadow .15s;
+  }
+  a.card:hover { text-decoration: none; border-color: var(--accent); box-shadow: 0 2px 10px rgba(37, 99, 235, .12); }
+  .card-name { font-weight: 600; font-size: 1.05rem; word-break: break-all; margin-bottom: 6px; }
+  .card-meta { color: var(--muted); font-size: 0.9rem; }
+  .card-error { background: #fafafa; cursor: not-allowed; }
+  .card-error .card-name { color: var(--muted); }
+  .card-reason { color: var(--warn-fg); font-size: 0.9rem; }
+  .badge {
+    display: inline-block; font-size: 0.8rem; padding: 1px 8px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent); margin-left: 6px; vertical-align: middle;
+  }
+
+  /* 資料檢視 */
+  .file-head { margin-bottom: 12px; }
+  .file-meta { color: var(--muted); font-size: 0.9rem; margin-top: 2px; }
+  .tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+  .tab {
+    padding: 8px 16px; border: 0; border-bottom: 3px solid transparent; background: none; cursor: pointer;
+    color: var(--muted); white-space: nowrap;
+  }
+  .tab:hover { color: var(--fg); }
+  .tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .data-bar { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+  .data-bar .field { flex: 1; min-width: 220px; max-width: 480px; }
+  .count { color: var(--muted); font-size: 0.95rem; white-space: nowrap; padding-bottom: 10px; }
+  .count strong { color: var(--fg); }
+
+  .table-wrap {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    overflow: auto; max-height: calc(100vh - 330px); min-height: 240px;  /* 留空間給分頁按鈕 */
+  }
+  /* 欄寬依內容,不擠壓;太寬時在表格框內左右捲動 */
+  table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: 0.95rem; }
+  th, td { padding: 9px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+  td { max-width: 28em; overflow-wrap: break-word; }  /* 長文字換行,但數字不會從中間斷開 */
+  thead th {
+    position: sticky; top: 0; z-index: 1; background: var(--head); font-weight: 600; white-space: nowrap;
+    box-shadow: inset 0 -1px 0 var(--line);
+  }
+  tbody tr:nth-child(even) { background: var(--zebra); }
+  tbody tr:hover { background: var(--hover); }
+  .rownum { color: var(--muted); font-size: 0.85rem; text-align: right; width: 1%; white-space: nowrap; }
+  .sort-btn {
+    all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: 600;
+  }
+  .sort-btn:focus-visible { outline: 2px solid var(--accent); border-radius: 4px; }
+  .sort-icon { color: var(--muted); font-size: 0.75rem; }
+  .sort-icon.active { color: var(--accent); }
+
+  .pager { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .pager .btn { padding: 8px 14px; }
+  .pager-info { color: var(--muted); font-size: 0.95rem; padding: 0 6px; }
+
+  /* 全部檔案搜尋結果 */
+  .group { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 16px; overflow: hidden; }
+  .group h2 { margin: 0; padding: 10px 14px; font-size: 1rem; border-bottom: 1px solid var(--line); }
+  .group h2 small { color: var(--muted); font-weight: normal; }
+  .group .table-wrap { border: 0; border-radius: 0; max-height: none; min-height: 0; }
+
+  @media (max-width: 720px) {
+    .topbar { padding: 10px 16px; }
+    main { padding: 14px 16px 24px; }
+    .toolbar { grid-template-columns: 1fr; }
+    .cards { grid-template-columns: 1fr; }
+    table { font-size: 0.9rem; }
+    th, td { padding: 8px 10px; }
+    td { max-width: 16em; }
+    .table-wrap { max-height: calc(100vh - 340px); }
+    .data-bar .field { max-width: none; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>Excel 查詢</h1>
-  <form id="form">
-    <select id="category"><option value="">全部分類</option></select>
-    <input id="q" type="search" placeholder="輸入關鍵字…" autofocus>
-    <button type="submit">搜尋</button>
-  </form>
+<header class="topbar">
+  <a class="brand" href="#/">Excel 查詢</a>
+  <span id="updated" class="updated"></span>
 </header>
-<main>
-  <div id="status">請輸入關鍵字開始搜尋</div>
-  <div id="notice"></div>
-  <div id="results"></div>
-</main>
+<main id="app"></main>
+<footer>資料為唯讀,如需修改請聯絡資料負責人</footer>
+
 <script>
-const $ = (id) => document.getElementById(id);
+"use strict";
+const app = document.getElementById("app");
+const PAGE_SIZE = 100;
+const DEBOUNCE_MS = 250;
+const POLL_MS = 2000;
+let pollTimer = null;   // 載入中時定期更新
+let viewToken = 0;      // 切換頁面後,舊頁面的非同步結果一律丟棄
+
+// ---------- 工具 ----------
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-// 與後端搜尋規則一致:/ 與 - 視為相同、數字間可有千分位逗號
+// 與後端搜尋規則一致:不分大小寫、/ 與 - 視為相同、數字間可有千分位逗號
 function highlightPattern(q) {
   const chars = [...escapeHtml(q)];
   return chars.map((c, i) => {
@@ -59,115 +173,400 @@ function highlightPattern(q) {
   }).join("");
 }
 
-function highlight(text, q) {
-  const safe = escapeHtml(text);
-  if (!q) return safe;
-  return safe.replace(new RegExp(highlightPattern(q), "gi"), (m) => `<mark>${m}</mark>`);
+function makeHighlighter(q) {
+  if (!q) return (text) => escapeHtml(text);
+  const re = new RegExp(highlightPattern(q), "gi");
+  return (text) => escapeHtml(text).replace(re, (m) => `<mark>${m}</mark>`);
 }
 
-const POLL_MS = 2000;
-let pollTimer = null;
-let lastQuery = null;  // 載入完成後自動重新搜尋用
+function fmtNumber(n) { return Number(n).toLocaleString("zh-TW"); }
 
-function renderNotice(errors, loading) {
-  const box = $("notice");
-  const parts = [];
-  if (loading.length) {
-    parts.push(`資料載入中,以下檔案尚未載入完成,結果可能不完整(完成後會自動更新):<ul>` +
-      loading.map((name) => `<li>${escapeHtml(name)}</li>`).join("") + "</ul>");
-  }
-  if (errors.length) {
-    parts.push("以下檔案無法讀取,已略過:<ul>" +
-      errors.map((e) => `<li>${escapeHtml(e.category)}:${escapeHtml(e.error)}</li>`).join("") + "</ul>");
-  }
-  box.innerHTML = parts.join("");
-  box.style.display = parts.length ? "block" : "none";
+async function getJson(url) {
+  const res = await fetch(url);
+  let body = null;
+  try { body = await res.json(); } catch { /* 非 JSON */ }
+  if (!res.ok) throw new Error((body && body.detail) || `伺服器錯誤(${res.status})`);
+  return body;
 }
 
-async function loadCategories() {
+function fileHash(name, params) {
+  const query = params && params.toString();
+  return `#/file/${encodeURIComponent(name)}${query ? "?" + query : ""}`;
+}
+
+// 更新網址但不新增瀏覽紀錄(檔案內的搜尋、排序、換頁),按上一頁會回到檔案列表
+function replaceHash(hash) {
+  if (location.hash !== hash) history.replaceState(null, "", hash);
+}
+
+function parseHash() {
+  const raw = location.hash.slice(1) || "/";
+  const q = raw.indexOf("?");
+  const path = q >= 0 ? raw.slice(0, q) : raw;
+  const params = new URLSearchParams(q >= 0 ? raw.slice(q + 1) : "");
+  const parts = path.split("/").filter(Boolean).map((p) => { try { return decodeURIComponent(p); } catch { return p; } });
+  if (parts[0] === "file" && parts.length > 1) return { view: "file", name: parts.slice(1).join("/"), params };
+  if (parts[0] === "search") return { view: "search", params };
+  return { view: "home", params };
+}
+
+function stopPolling() { clearTimeout(pollTimer); pollTimer = null; }
+
+// 頂部顯示資料最後更新時間(所有檔案中最新的修改時間)
+async function refreshUpdated(cats) {
   try {
-    const res = await fetch("/api/categories");
-    const cats = await res.json();
-    const select = $("category");
-    const current = select.value;
-    select.length = 1;  // 保留「全部分類」
-    for (const c of cats) {
-      const opt = document.createElement("option");
-      opt.value = c.name;
-      opt.textContent = c.status === "error" ? `${c.name}(${c.error})`
-        : c.status === "loading" ? `${c.name}(載入中)` : c.name;
-      opt.disabled = c.status === "error";
-      select.appendChild(opt);
+    cats = cats || await getJson("/api/categories");
+    const latest = cats.map((c) => c.updated).filter(Boolean).sort().pop();
+    document.getElementById("updated").textContent = latest ? `資料最後更新:${latest}` : "";
+  } catch { /* 不影響主畫面 */ }
+}
+
+// ---------- 路由 ----------
+
+function route() {
+  stopPolling();
+  viewToken += 1;
+  const r = parseHash();
+  window.scrollTo(0, 0);
+  if (r.view === "file") renderFile(r.name, r.params);
+  else if (r.view === "search") renderSearch(r.params.get("q") || "");
+  else renderHome();
+}
+window.addEventListener("hashchange", route);
+
+// ---------- 頁面一:檔案列表 ----------
+
+function renderHome() {
+  document.title = "Excel 查詢";
+  const token = viewToken;
+  app.innerHTML = `
+    <section class="toolbar">
+      <div class="field">
+        <label for="fileFilter">搜尋檔名</label>
+        <input id="fileFilter" class="input" type="search" placeholder="輸入檔名關鍵字,立即篩選" autocomplete="off">
+      </div>
+      <form id="allSearch" class="field">
+        <label for="allQ">搜尋全部檔案的內容</label>
+        <div class="row">
+          <input id="allQ" class="input" type="search" placeholder="例如:王小明、A001" autocomplete="off">
+          <button class="btn" type="submit">搜尋全部檔案</button>
+        </div>
+      </form>
+    </section>
+    <div id="homeNotice"></div>
+    <p id="summary" class="summary">載入中…</p>
+    <div id="fileList" class="cards"></div>`;
+  let cats = [];
+  const filter = document.getElementById("fileFilter");
+  filter.addEventListener("input", () => drawCards(cats, filter.value));
+  document.getElementById("allSearch").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = document.getElementById("allQ").value.trim();
+    if (q) location.hash = `#/search?${new URLSearchParams({ q })}`;
+  });
+
+  async function load() {
+    try {
+      cats = await getJson("/api/categories");
+    } catch (err) {
+      if (token !== viewToken) return;
+      document.getElementById("summary").textContent = `無法載入檔案清單:${err.message}`;
+      pollTimer = setTimeout(load, POLL_MS * 2);
+      return;
     }
-    if (cats.some((c) => c.name === current && c.status !== "error")) select.value = current;
-    const loadingCount = cats.filter((c) => c.status === "loading").length;
-    if (cats.length === 0) {
-      $("status").textContent = "資料夾中沒有任何 Excel 檔案";
-    } else if (loadingCount && lastQuery === null) {
-      $("status").textContent = `資料載入中(${cats.length - loadingCount} / ${cats.length} 個檔案)…`;
-    } else if (lastQuery === null) {
-      $("status").textContent = "請輸入關鍵字開始搜尋";
+    if (token !== viewToken) return;
+    refreshUpdated(cats);
+    drawCards(cats, filter.value);
+    const loading = cats.filter((c) => c.status === "loading").length;
+    document.getElementById("homeNotice").innerHTML = loading
+      ? `<div class="notice">資料載入中(已完成 ${cats.length - loading} / ${cats.length} 個檔案),完成後會自動更新。</div>` : "";
+    if (loading) pollTimer = setTimeout(load, POLL_MS);
+  }
+  load();
+}
+
+function drawCards(cats, filterText) {
+  const list = document.getElementById("fileList");
+  const summary = document.getElementById("summary");
+  if (!list) return;
+  const f = filterText.trim().toLowerCase();
+  const shown = f ? cats.filter((c) => c.name.toLowerCase().includes(f)) : cats;
+  if (cats.length === 0) {
+    summary.textContent = "";
+    list.innerHTML = `<div class="empty">資料夾中沒有任何 Excel 檔案</div>`;
+    return;
+  }
+  summary.textContent = f ? `共 ${cats.length} 個檔案,符合 ${shown.length} 個` : `共 ${cats.length} 個檔案`;
+  if (shown.length === 0) {
+    list.innerHTML = `<div class="empty">沒有檔名包含「${escapeHtml(filterText.trim())}」的檔案</div>`;
+    return;
+  }
+  const hl = makeHighlighter(filterText.trim());
+  list.innerHTML = shown.map((c) => {
+    const updated = c.updated ? `更新:${escapeHtml(c.updated)}` : "";
+    if (c.status === "error") {
+      return `<div class="card card-error" aria-disabled="true" title="${escapeHtml(c.error)}">
+        <div class="card-name">${hl(c.name)}</div>
+        <div class="card-reason">⚠ ${escapeHtml(c.error)}</div>
+        <div class="card-meta">${updated}</div></div>`;
     }
-    schedulePoll(loadingCount > 0);
-    return cats;
-  } catch {
-    $("status").textContent = "無法載入分類";
-    return [];
+    if (c.status === "loading") {
+      return `<a class="card" href="${fileHash(c.name)}">
+        <div class="card-name">${hl(c.name)}<span class="badge">載入中</span></div>
+        <div class="card-meta">${updated}</div></a>`;
+    }
+    return `<a class="card" href="${fileHash(c.name)}">
+      <div class="card-name">${hl(c.name)}</div>
+      <div class="card-meta">${fmtNumber(c.rows)} 筆 · ${c.sheets} 個工作表</div>
+      <div class="card-meta">${updated}</div></a>`;
+  }).join("");
+}
+
+// ---------- 搜尋全部檔案 ----------
+
+function renderSearch(q) {
+  document.title = `搜尋「${q}」- Excel 查詢`;
+  const token = viewToken;
+  app.innerHTML = `
+    <a class="back" href="#/">← 返回檔案列表</a>
+    <form id="allSearch" class="field" style="max-width:640px;margin-bottom:12px">
+      <label for="allQ">搜尋全部檔案的內容</label>
+      <div class="row">
+        <input id="allQ" class="input" type="search" autocomplete="off">
+        <button class="btn" type="submit">搜尋</button>
+      </div>
+    </form>
+    <p id="summary" class="summary"></p>
+    <div id="searchNotice"></div>
+    <div id="results"></div>`;
+  const input = document.getElementById("allQ");
+  input.value = q;
+  document.getElementById("allSearch").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const v = input.value.trim();
+    if (v) location.hash = `#/search?${new URLSearchParams({ q: v })}`;
+  });
+  refreshUpdated();
+  if (!q) { document.getElementById("summary").textContent = "請輸入關鍵字"; return; }
+
+  async function load() {
+    document.getElementById("summary").textContent = "搜尋中…";
+    let data;
+    try {
+      data = await getJson(`/api/search?${new URLSearchParams({ q })}`);
+    } catch (err) {
+      if (token === viewToken) document.getElementById("summary").textContent = `搜尋失敗:${err.message}`;
+      return;
+    }
+    if (token !== viewToken) return;
+    const total = data.results.reduce((n, g) => n + g.rows.length, 0);
+    document.getElementById("summary").textContent = total
+      ? `在 ${new Set(data.results.map((g) => g.category)).size} 個檔案中找到 ${fmtNumber(total)} 筆${total >= 500 ? "(最多顯示 500 筆,請輸入更精確的關鍵字)" : ""}`
+      : (data.loading.length ? "資料載入中,請稍候…" : `找不到符合「${q}」的資料`);
+    const notes = [];
+    if (data.loading.length) notes.push(`資料載入中,以下檔案尚未載入完成,結果可能不完整(完成後會自動更新):<ul>${data.loading.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>`);
+    if (data.errors.length) notes.push(`以下檔案無法讀取,已略過:<ul>${data.errors.map((e) => `<li>${escapeHtml(e.category)}:${escapeHtml(e.error)}</li>`).join("")}</ul>`);
+    document.getElementById("searchNotice").innerHTML = notes.map((n) => `<div class="notice">${n}</div>`).join("");
+    const hl = makeHighlighter(q);
+    document.getElementById("results").innerHTML = data.results.map((g) => {
+      const link = fileHash(g.category, new URLSearchParams({ sheet: g.sheet, q }));
+      return `<section class="group">
+        <h2><a href="${link}">${escapeHtml(g.category)}</a> <small>/ ${escapeHtml(g.sheet)}(${fmtNumber(g.rows.length)} 筆)· 點檔名查看整份資料</small></h2>
+        <div class="table-wrap"><table>
+          <thead><tr>${g.columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead>
+          <tbody>${g.rows.map((r) => `<tr>${r.map((v) => `<td>${hl(v)}</td>`).join("")}</tr>`).join("")}</tbody>
+        </table></div></section>`;
+    }).join("");
+    if (data.loading.length) pollTimer = setTimeout(load, POLL_MS);
   }
+  load();
 }
 
-// 還有檔案在載入時定期更新狀態;全部載入完成後,若有搜尋過就自動重新搜尋
-function schedulePoll(stillLoading) {
-  clearTimeout(pollTimer);
-  if (stillLoading) {
-    pollTimer = setTimeout(loadCategories, POLL_MS);
-  } else if (pollTimer !== null) {
-    pollTimer = null;
-    if (lastQuery) runSearch(lastQuery.q, lastQuery.category);
+// ---------- 頁面二:資料檢視 ----------
+
+function renderFile(name, params) {
+  document.title = `${name} - Excel 查詢`;
+  const token = viewToken;
+  const state = {
+    sheet: params.get("sheet"),
+    q: params.get("q") || "",
+    sort: params.has("sort") ? Number(params.get("sort")) : null,
+    order: params.get("order") === "desc" ? "desc" : "asc",
+    page: Math.max(1, Number(params.get("page")) || 1),
+  };
+  let requestSeq = 0;
+  let debounceTimer = null;
+
+  app.innerHTML = `
+    <div class="file-head">
+      <a class="back" href="#/">← 返回檔案列表</a>
+      <h1>${escapeHtml(name)}</h1>
+      <div id="fileMeta" class="file-meta"></div>
+    </div>
+    <div id="fileBody"><div class="empty">載入中…</div></div>`;
+
+  function syncHash() {
+    const p = new URLSearchParams();
+    if (state.sheet) p.set("sheet", state.sheet);
+    if (state.q) p.set("q", state.q);
+    if (state.sort !== null) { p.set("sort", state.sort); p.set("order", state.order); }
+    if (state.page > 1) p.set("page", state.page);
+    replaceHash(fileHash(name, p));
   }
-}
 
-async function doSearch(e) {
-  e.preventDefault();
-  const q = $("q").value.trim();
-  if (!q) { $("status").textContent = "請輸入關鍵字"; $("results").innerHTML = ""; return; }
-  await runSearch(q, $("category").value);
-}
-
-async function runSearch(q, category) {
-  lastQuery = { q, category };
-  $("status").textContent = "搜尋中…";
-  const params = new URLSearchParams({ q });
-  if (category) params.set("category", category);
-  try {
-    const res = await fetch(`/api/search?${params}`);
-    if (!res.ok) throw new Error((await res.json()).detail || "搜尋失敗");
-    const data = await res.json();
-    render(data.results, q, data.loading);
-    renderNotice(data.errors, data.loading);
-    if (data.loading.length) schedulePoll(true);
-  } catch (err) {
-    $("status").textContent = `錯誤:${err.message}`;
-    $("results").innerHTML = "";
+  async function loadInfo() {
+    let info;
+    try {
+      info = await getJson(`/api/files/${encodeURIComponent(name)}`);
+    } catch (err) {
+      if (token !== viewToken) return;
+      document.getElementById("fileBody").innerHTML = `<div class="empty">${escapeHtml(err.message)}<br><br><a href="#/">返回檔案列表</a></div>`;
+      return;
+    }
+    if (token !== viewToken) return;
+    refreshUpdated();
+    document.getElementById("fileMeta").textContent =
+      [info.updated && `檔案更新:${info.updated}`, info.rows != null && `${fmtNumber(info.rows)} 筆`].filter(Boolean).join(" · ");
+    if (info.status === "loading") {
+      document.getElementById("fileBody").innerHTML = `<div class="empty">資料載入中,請稍候…(完成後會自動顯示)</div>`;
+      pollTimer = setTimeout(loadInfo, POLL_MS);
+      return;
+    }
+    if (info.status === "error") {
+      document.getElementById("fileBody").innerHTML = `<div class="empty">⚠ ${escapeHtml(info.error)}<br><br><a href="#/">返回檔案列表</a></div>`;
+      return;
+    }
+    const sheets = info.sheet_list;
+    if (!sheets.length) {
+      document.getElementById("fileBody").innerHTML = `<div class="empty">此檔案沒有可顯示的工作表</div>`;
+      return;
+    }
+    if (!sheets.some((s) => s.name === state.sheet)) state.sheet = sheets[0].name;
+    drawLayout(sheets);
+    loadRows();
   }
+
+  function drawLayout(sheets) {
+    const tabs = sheets.length > 1
+      ? `<nav class="tabs" role="tablist">${sheets.map((s) => `
+          <button class="tab" role="tab" data-sheet="${escapeHtml(s.name)}" aria-selected="${s.name === state.sheet}">
+            ${escapeHtml(s.name)} <span class="muted">(${fmtNumber(s.rows)})</span></button>`).join("")}</nav>`
+      : "";
+    document.getElementById("fileBody").innerHTML = `
+      ${tabs}
+      <div class="data-bar">
+        <div class="field">
+          <label for="rowQ">搜尋資料</label>
+          <input id="rowQ" class="input" type="search" placeholder="輸入關鍵字,自動篩選" autocomplete="off">
+        </div>
+        <div id="count" class="count"></div>
+      </div>
+      <div id="tableWrap" class="table-wrap"><div class="empty">載入中…</div></div>
+      <div id="pager" class="pager"></div>`;
+    const input = document.getElementById("rowQ");
+    input.value = state.q;
+    input.addEventListener("input", () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        state.q = input.value.trim();
+        state.page = 1;
+        syncHash();
+        loadRows();
+      }, DEBOUNCE_MS);
+    });
+    document.querySelectorAll(".tab").forEach((btn) => btn.addEventListener("click", () => {
+      if (btn.dataset.sheet === state.sheet) return;
+      state.sheet = btn.dataset.sheet;
+      state.sort = null;
+      state.page = 1;
+      document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-selected", b === btn));
+      syncHash();
+      loadRows();
+    }));
+  }
+
+  async function loadRows() {
+    const seq = ++requestSeq;
+    const p = new URLSearchParams({ page: state.page, page_size: PAGE_SIZE });
+    if (state.sheet) p.set("sheet", state.sheet);
+    if (state.q) p.set("q", state.q);
+    if (state.sort !== null) { p.set("sort", state.sort); p.set("order", state.order); }
+    let data;
+    try {
+      data = await getJson(`/api/files/${encodeURIComponent(name)}/rows?${p}`);
+    } catch (err) {
+      if (seq !== requestSeq || token !== viewToken) return;
+      if (state.sort !== null && /排序/.test(err.message)) { state.sort = null; syncHash(); loadRows(); return; }
+      document.getElementById("tableWrap").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+      return;
+    }
+    if (seq !== requestSeq || token !== viewToken) return;  // 只顯示最後一次的結果
+    if (data.status !== "ok") { loadInfo(); return; }      // 檔案剛好重新載入或變成無法讀取
+    state.page = data.page;
+    syncHash();
+    drawTable(data);
+  }
+
+  function drawTable(data) {
+    const count = document.getElementById("count");
+    count.innerHTML = state.q
+      ? `共 <strong>${fmtNumber(data.total)}</strong> 筆 / 找到 <strong>${fmtNumber(data.matched)}</strong> 筆`
+      : `共 <strong>${fmtNumber(data.total)}</strong> 筆`;
+    const wrap = document.getElementById("tableWrap");
+    if (data.total === 0) {
+      wrap.innerHTML = `<div class="empty">此工作表沒有資料</div>`;
+    } else if (data.matched === 0) {
+      wrap.innerHTML = `<div class="empty">找不到符合「${escapeHtml(state.q)}」的資料</div>`;
+    } else {
+      const hl = makeHighlighter(state.q);
+      const head = data.columns.map((c, i) => {
+        const active = state.sort === i;
+        const icon = active ? (state.order === "asc" ? "▲" : "▼") : "↕";
+        const label = active ? (state.order === "asc" ? "遞增排序中,再點一次改為遞減" : "遞減排序中,再點一次取消排序") : "點一下依此欄排序";
+        return `<th><button class="sort-btn" data-col="${i}" title="${label}">${escapeHtml(c)}
+          <span class="sort-icon${active ? " active" : ""}">${icon}</span></button></th>`;
+      }).join("");
+      const body = data.rows.map((r, i) =>
+        `<tr><td class="rownum">${fmtNumber(data.offset + i + 1)}</td>${r.map((v) => `<td>${hl(v)}</td>`).join("")}</tr>`
+      ).join("");
+      wrap.innerHTML = `<table><thead><tr><th class="rownum">#</th>${head}</tr></thead><tbody>${body}</tbody></table>`;
+      wrap.querySelectorAll(".sort-btn").forEach((btn) => btn.addEventListener("click", () => {
+        const col = Number(btn.dataset.col);
+        // 依序:遞增 → 遞減 → 取消排序
+        if (state.sort !== col) { state.sort = col; state.order = "asc"; }
+        else if (state.order === "asc") state.order = "desc";
+        else state.sort = null;
+        state.page = 1;
+        syncHash();
+        loadRows();
+      }));
+    }
+    wrap.scrollTop = 0;
+    drawPager(data);
+  }
+
+  function drawPager(data) {
+    const pager = document.getElementById("pager");
+    if (data.pages <= 1) { pager.innerHTML = ""; return; }
+    const first = data.offset + 1;
+    const last = data.offset + data.rows.length;
+    pager.innerHTML = `
+      <button class="btn btn-plain" data-page="1" ${data.page === 1 ? "disabled" : ""}>« 第一頁</button>
+      <button class="btn btn-plain" data-page="${data.page - 1}" ${data.page === 1 ? "disabled" : ""}>‹ 上一頁</button>
+      <span class="pager-info">第 ${fmtNumber(data.page)} / ${fmtNumber(data.pages)} 頁(第 ${fmtNumber(first)}–${fmtNumber(last)} 筆)</span>
+      <button class="btn btn-plain" data-page="${data.page + 1}" ${data.page === data.pages ? "disabled" : ""}>下一頁 ›</button>
+      <button class="btn btn-plain" data-page="${data.pages}" ${data.page === data.pages ? "disabled" : ""}>最後一頁 »</button>`;
+    pager.querySelectorAll("button[data-page]").forEach((btn) => btn.addEventListener("click", () => {
+      state.page = Number(btn.dataset.page);
+      syncHash();
+      loadRows();
+    }));
+  }
+
+  loadInfo();
 }
 
-function render(groups, q, loading) {
-  const total = groups.reduce((n, g) => n + g.rows.length, 0);
-  $("status").textContent = total ? `共找到 ${total} 筆`
-    : loading.length ? "資料載入中,請稍候…" : "查無資料";
-  $("results").innerHTML = groups.map((g) => `
-    <section>
-      <h2>${escapeHtml(g.category)} <small>/ ${escapeHtml(g.sheet)}(${g.rows.length} 筆)</small></h2>
-      <div class="scroll"><table>
-        <thead><tr>${g.columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead>
-        <tbody>${g.rows.map((r) => `<tr>${r.map((v) => `<td>${highlight(v, q)}</td>`).join("")}</tr>`).join("")}</tbody>
-      </table></div>
-    </section>`).join("");
-}
-
-$("form").addEventListener("submit", doSearch);
-loadCategories();
+route();
 </script>
 </body>
 </html>

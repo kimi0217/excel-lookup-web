@@ -7,16 +7,19 @@ import logging
 import re
 import shutil
 import tempfile
+import math
 import threading
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import column_index_from_string
 
-from cell_format import display_value, normalize
+from cell_format import display_value, normalize, sort_key
 from table_layout import Merge, build_table
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,14 @@ class ExcelReadError(Exception):
     """讀取失敗;訊息是給使用者看的簡短原因。"""
 
 
+class SheetNotFound(Exception):
+    """指定的工作表不存在。"""
+
+
+class SortColumnNotFound(Exception):
+    """指定的排序欄位不存在。"""
+
+
 @dataclass
 class Sheet:
     """一個工作表:欄位名稱、顯示用的各列文字,以及每列正規化後的搜尋字串。"""
@@ -46,6 +57,8 @@ class Sheet:
     columns: list[str]
     rows: list[list[str]]
     haystack: pd.Series
+    # 各欄遞增排序後的列索引(空白排最後),第一次排序時計算後保留
+    _sort_cache: dict[int, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
     def build(cls, columns: list[str], rows: list[list[str]]) -> Sheet:
@@ -53,6 +66,22 @@ class Sheet:
             [normalize(ROW_SEPARATOR.join(row)) for row in rows], dtype=object
         )
         return cls(columns, rows, haystack)
+
+    def match_mask(self, needle: str) -> np.ndarray:
+        """每列是否包含已正規化的關鍵字;關鍵字為空時全部符合。"""
+        if not needle:
+            return np.ones(len(self.rows), dtype=bool)
+        return self.haystack.str.contains(needle, regex=False).to_numpy(dtype=bool)
+
+    def sorted_order(self, column: int, descending: bool = False) -> np.ndarray:
+        """依某欄排序後的列索引。數字依數值、文字依字串;不論遞增遞減,空白都排在最後。"""
+        if column not in self._sort_cache:
+            filled = [i for i, row in enumerate(self.rows) if row[column]]
+            blank = [i for i, row in enumerate(self.rows) if not row[column]]
+            filled.sort(key=lambda i: sort_key(self.rows[i][column]))
+            self._sort_cache[column] = (np.array(filled, dtype=np.int64), np.array(blank, dtype=np.int64))
+        filled, blank = self._sort_cache[column]
+        return np.concatenate([filled[::-1] if descending else filled, blank])
 
 
 def list_categories(data_dir: Path) -> list[str]:
@@ -229,17 +258,96 @@ class Catalog:
                 except ExcelReadError as exc:
                     self._entries[name] = _Entry(key, {}, str(exc))
 
+    def _summary(self, name: str) -> dict:
+        """單一檔案的狀態摘要:status 為 ok、error(附 error 原因)或 loading(尚未載入)。"""
+        entry = self._entries.get(name)
+        mtime = entry.key[0] if entry else None
+        if mtime is None:
+            try:
+                mtime = (self.data_dir / f"{name}.xlsx").stat().st_mtime
+            except OSError:
+                mtime = None
+        summary = {
+            "name": name,
+            "status": "loading" if entry is None else ("error" if entry.error else "ok"),
+            "error": entry.error if entry else None,
+            "updated": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime else None,
+            "rows": None,
+            "sheets": None,
+        }
+        if entry is not None and not entry.error:
+            summary["rows"] = sum(len(sheet.rows) for sheet in entry.sheets.values())
+            summary["sheets"] = len(entry.sheets)
+        return summary
+
     def categories(self) -> list[dict]:
-        """分類清單;status 為 ok、error(附 error 原因)或 loading(尚未載入)。"""
-        result = []
-        for name in list_categories(self.data_dir):
-            entry = self._entries.get(name)
-            if entry is None:
-                result.append({"name": name, "status": "loading", "error": None})
-            elif entry.error:
-                result.append({"name": name, "status": "error", "error": entry.error})
-            else:
-                result.append({"name": name, "status": "ok", "error": None})
+        """檔案清單:名稱、狀態、筆數、工作表數、最後更新時間(檔案修改時間)。"""
+        return [self._summary(name) for name in list_categories(self.data_dir)]
+
+    def file_info(self, name: str) -> dict:
+        """單一檔案的摘要與工作表清單;檔案不存在時拋出 KeyError。"""
+        if name not in list_categories(self.data_dir):
+            raise KeyError(name)
+        info = self._summary(name)
+        entry = self._entries.get(name)
+        info["sheet_list"] = (
+            [{"name": n, "rows": len(sh.rows), "columns": len(sh.columns)} for n, sh in entry.sheets.items()]
+            if entry is not None and not entry.error
+            else []
+        )
+        return info
+
+    def rows(
+        self,
+        name: str,
+        sheet: str | None = None,
+        query: str = "",
+        sort: int | None = None,
+        descending: bool = False,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> dict:
+        """某工作表的分頁資料,可篩選與排序。
+
+        檔案不存在拋出 KeyError;工作表不存在拋出 SheetNotFound;排序欄位不存在拋出 SortColumnNotFound。
+        頁碼超過範圍時改為最後一頁。檔案尚未載入或讀取失敗時 status 為 loading / error,rows 為空。
+        """
+        info = self.file_info(name)
+        result = {
+            "status": info["status"], "error": info["error"], "sheet": None, "columns": [], "rows": [],
+            "total": 0, "matched": 0, "page": 1, "page_size": page_size, "pages": 1, "offset": 0,
+        }
+        if info["status"] != "ok":
+            return result
+        sheets = self._entries[name].sheets
+        if not sheets:
+            return result
+        sheet_name = sheet if sheet is not None else next(iter(sheets))
+        if sheet_name not in sheets:
+            raise SheetNotFound(sheet_name)
+        data = sheets[sheet_name]
+        if sort is not None and not 0 <= sort < len(data.columns):
+            raise SortColumnNotFound(sort)
+        mask = data.match_mask(normalize(query.strip()))
+        if sort is None:
+            order = np.flatnonzero(mask)
+        else:
+            order = data.sorted_order(sort, descending)
+            order = order[mask[order]]
+        matched = len(order)
+        pages = max(1, math.ceil(matched / page_size))
+        page = min(max(page, 1), pages)
+        offset = (page - 1) * page_size
+        result.update(
+            sheet=sheet_name,
+            columns=data.columns,
+            rows=[data.rows[i] for i in order[offset : offset + page_size]],
+            total=len(data.rows),
+            matched=matched,
+            page=page,
+            pages=pages,
+            offset=offset,
+        )
         return result
 
     def search(self, query: str, category: str | None = None, max_results: int = 500) -> dict:
@@ -268,8 +376,7 @@ class Catalog:
                     break
                 if not sheet.rows:
                     continue
-                hits = sheet.haystack.str.contains(needle, regex=False)
-                indexes = hits[hits].index[:remaining]
+                indexes = np.flatnonzero(sheet.match_mask(needle))[:remaining]
                 if len(indexes) == 0:
                     continue
                 remaining -= len(indexes)
