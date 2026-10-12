@@ -66,10 +66,11 @@ def create_app(config: dict | None = None) -> FastAPI:
     data_dir: Path = config["data_dir"]
     max_results: int = config.get("max_results", 500)
     include_hidden: bool = config.get("include_hidden_sheets", False)
+    include_hidden_rc: bool = config.get("include_hidden_rows_columns", False)
     backup_dir: Path | None = config.get("backup_dir")
     keep_days: int = config.get("backup_keep_days", 30)
     reload_interval: float = config.get("reload_interval_seconds", 10)
-    catalog = excel_reader.Catalog(data_dir, include_hidden)
+    catalog = excel_reader.Catalog(data_dir, include_hidden, include_hidden_rc)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

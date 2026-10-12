@@ -228,6 +228,21 @@ def uppercase_extension(path: Path) -> None:
     wb.save(path)
 
 
+def hidden_rows_columns(path: Path) -> None:
+    """C 欄手動隱藏;第 3 列在自動篩選範圍內隱藏(篩選造成),第 7 列在範圍外隱藏(手動)。"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "清單"
+    ws.append(["編號", "名稱", "機密欄", "備註"])
+    for i, label in enumerate(["一般1", "篩選隱藏", "一般2", "一般3", "一般4", "手動隱藏"], start=1):
+        ws.append([f"H{i}", label, f"機密{i}", "備註"])
+    ws.column_dimensions["C"].hidden = True
+    ws.auto_filter.ref = "A1:D6"
+    ws.row_dimensions[3].hidden = True
+    ws.row_dimensions[7].hidden = True
+    wb.save(path)
+
+
 CASES = {
     "01_標題列": title_rows,
     "02_合併儲存格": merged_cells,
@@ -244,6 +259,7 @@ CASES = {
     "13_貨幣格式": currency,
     "14_巨集檔.xlsm": macro_workbook,
     "15_大寫副檔名.XLSX": uppercase_extension,
+    "16_隱藏列與欄": hidden_rows_columns,
 }
 
 

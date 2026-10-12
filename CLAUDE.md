@@ -52,6 +52,7 @@
 - **壞檔隔離**:任何讀取失敗只影響該檔,回報簡短中文原因(密碼保護、舊版 .xls、損毀、無法存取),不可讓「全部分類」搜尋失敗。讀取失敗的檔案每次 refresh 都重讀(同樣的錯誤只記錄一次)。
 - **資料夾斷線**:scan_folder 失敗時保留已載入的資料,/api/categories 的 folder 回報 ok 與 last_success;請求一律只用背景 refresh 快取的檔案清單,不存取資料夾(網路斷線時存取可能卡住數秒)。
 - **隱藏工作表預設不讀**:隱藏與極度隱藏的工作表在 include_hidden_sheets 為 false(預設)時完全不讀取,避免使用者刻意隱藏的資料被搜尋到。
+- **隱藏的列與欄**(include_hidden_rows_columns,預設 false):false 時手動隱藏的欄與列不讀(table_layout.drop_hidden,在偵測表頭之前移除);位於篩選範圍內的隱藏列是篩選造成的,照常讀取。篩選範圍包含工作表的 `<autoFilter>` 與「格式化為表格」各表格 XML 中的 `<autoFilter>`(透過工作表的 _rels 找到 xl/tables/*.xml)。唯讀模式取不到這些資訊,與合併儲存格相同從工作表 XML 解析 `<row hidden="1">`、`<col min max hidden="1">`;每個工作表的 XML 只讀一次。
 - **表頭偵測**(table_layout.detect_header):在前 10 個非空白列中,選最前面一個同時符合下列條件的列;都不符合時用第一個非空白列:
   - 非空白格數(合併範圍算每一格)≥ 候選列最大值的 80%
   - 非空白格中文字超過一半(數字、日期不算文字)
@@ -64,6 +65,6 @@
 - **數字格式**:支援補 0、小數位數、千分位、百分比、貨幣與文字前後綴、正負零分段;分數與科學記號等無法處理的格式以一般格式顯示。
 
 ## 風險:openpyxl 內部屬性
-- openpyxl 唯讀模式不提供合併範圍,程式透過內部屬性 `_worksheet_path`(excel_reader.SHEET_PATH_ATTR)找到工作表 XML,自行解析 `<mergeCell>`。
-- 這是非公開 API,升級 openpyxl 後可能改名。取不到時程式不會當掉,但合併儲存格不會填值;啟動時會檢查(merge_support_ok)並在記錄中印出警告。
+- openpyxl 唯讀模式不提供合併範圍與隱藏列欄,程式透過內部屬性 `_worksheet_path`(excel_reader.SHEET_PATH_ATTR)找到工作表 XML,自行解析 `<mergeCell>`、`<row hidden>`、`<col hidden>`、`<autoFilter>`。
+- 這是非公開 API,升級 openpyxl 後可能改名。取不到時程式不會當掉,但合併儲存格不會填值、隱藏的列與欄也會被讀取;啟動時會檢查(merge_support_ok)並在記錄中印出警告。
 - tests/test_merge_support.py 會在取不到合併範圍時失敗,升級 openpyxl 前務必先跑測試。
