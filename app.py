@@ -83,7 +83,8 @@ def create_app(config: dict | None = None) -> FastAPI:
         for task in tasks:
             task.cancel()
 
-    app = FastAPI(title="Excel 查詢", lifespan=lifespan)
+    # 內網唯讀服務不公開 API 文件頁面
+    app = FastAPI(title="Excel 查詢", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.catalog = catalog
 
     @app.get("/")

@@ -112,3 +112,8 @@ def test_config_with_bom_and_windows_paths(tmp_path, monkeypatch):
     config = app.load_config()
     assert config["port"] == 9000
     assert str(config["data_dir"]).endswith("Excel")
+
+
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+def test_api_docs_disabled(client, path):
+    assert client.get(path).status_code == 404
