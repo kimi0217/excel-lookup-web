@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import logging
 import re
 import shutil
@@ -17,10 +16,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from xml.etree import ElementTree
 
 import numpy as np
 import pandas as pd
-from openpyxl import Workbook, load_workbook
+from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
 
 from cell_format import display_value, normalize, sort_key, split_keywords
@@ -206,19 +206,9 @@ _MERGE_REF = re.compile(rb'<(?:\w+:)?mergeCell\b[^>]*?\bref="([A-Z]+)(\d+)(?::([
 TYPE_SAMPLE_ROWS = 60  # 只記錄前 60 列的儲存格型別,供偵測表頭使用
 
 
-# openpyxl 唯讀工作表記錄 XML 位置的內部屬性(非公開 API,升級 openpyxl 後可能改名)
-SHEET_PATH_ATTR = "_worksheet_path"
-MSG_MERGE_UNSUPPORTED = (
-    "目前的 openpyxl 版本取不到合併儲存格範圍(內部屬性 %s 不存在),"
-    "合併儲存格將不會填入值;請改回 requirements.txt 鎖定的版本"
-)
-_merge_warning_logged = False
-
-
 _ROW_TAG = re.compile(rb"<(?:\w+:)?row\b([^>]*)>")
 _COL_TAG = re.compile(rb"<(?:\w+:)?col\b([^>]*)>")
 _AUTO_FILTER = re.compile(rb'<(?:\w+:)?autoFilter\b[^>]*?\bref="[A-Z]+(\d+)(?::[A-Z]+(\d+))?"')
-_RELATIONSHIP = re.compile(rb"<(?:\w+:)?Relationship\b([^>]*)>")
 
 
 def _attr(attrs: bytes, name: str) -> str | None:
@@ -226,23 +216,51 @@ def _attr(attrs: bytes, name: str) -> str | None:
     return match.group(1).decode() if match else None
 
 
-def _sheet_xml(archive: zipfile.ZipFile, ws) -> tuple[str, bytes] | None:
-    """取得工作表在檔案中的路徑與 XML。openpyxl 唯讀模式不提供合併範圍與隱藏列欄,只能自行解析。
-
-    取不到時回傳 None(不當掉),並記錄一次警告。
-    """
-    global _merge_warning_logged
-    sheet_path = getattr(ws, SHEET_PATH_ATTR, None)
-    if not sheet_path:
-        if not _merge_warning_logged:
-            logger.warning(MSG_MERGE_UNSUPPORTED, SHEET_PATH_ATTR)
-            _merge_warning_logged = True
-        return None
-    sheet_path = sheet_path.lstrip("/")
+def _relationships(archive: zipfile.ZipFile, part: str) -> dict[str, tuple[str, str]]:
+    """讀取某個檔案部件的關聯(_rels/*.rels):Id → (Type, 檔案路徑)。沒有 rels 時回傳空字典。"""
+    folder = posixpath.dirname(part)
+    rels_path = posixpath.join(folder, "_rels", posixpath.basename(part) + ".rels")
     try:
-        return sheet_path, archive.read(sheet_path)
+        root = ElementTree.fromstring(archive.read(rels_path))
     except KeyError:
-        return None
+        return {}
+    result = {}
+    for rel in root:
+        target = rel.get("Target") or ""
+        if rel.get("TargetMode") == "External":
+            continue
+        # Target 可能是絕對路徑(/xl/worksheets/sheet1.xml)或相對於該部件所在資料夾的路徑
+        path = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join(folder, target))
+        result[rel.get("Id") or ""] = (rel.get("Type") or "", path)
+    return result
+
+
+def sheet_xml_paths(archive: zipfile.ZipFile) -> dict[str, str]:
+    """工作表名稱 → 工作表 XML 在檔案中的路徑。
+
+    openpyxl 唯讀模式不提供合併範圍與隱藏列欄,只能自行解析工作表 XML;位置依 OOXML 規範,
+    由 _rels/.rels 找到活頁簿(通常是 xl/workbook.xml),再以 xl/workbook.xml 的 <sheet name r:id>
+    對應 xl/_rels/workbook.xml.rels 的 Target。檔案結構有問題時回傳空字典(不當掉)。
+    """
+    try:
+        workbook = next(
+            (path for rel_type, path in _relationships(archive, "").values() if rel_type.endswith("/officeDocument")),
+            "xl/workbook.xml",
+        )
+        rels = _relationships(archive, workbook)
+        root = ElementTree.fromstring(archive.read(workbook))
+    except (KeyError, ElementTree.ParseError, zipfile.BadZipFile):
+        return {}
+    paths = {}
+    for sheet in root.iter():
+        if not sheet.tag.endswith("}sheet") and sheet.tag != "sheet":
+            continue
+        # r:id 的命名空間在 Strict 格式中不同,只看屬性名稱的結尾
+        rel_id = next((v for k, v in sheet.attrib.items() if k.endswith("}id")), None)
+        name = sheet.get("name")
+        if name is not None and rel_id in rels:
+            paths[name] = rels[rel_id][1]
+    return paths
 
 
 def _parse_merges(xml: bytes) -> list[Merge]:
@@ -258,28 +276,14 @@ def _parse_merges(xml: bytes) -> list[Merge]:
     return merges
 
 
-def _merge_ranges(archive: zipfile.ZipFile, ws) -> list[Merge]:
-    """讀取工作表的合併範圍;取不到時回傳空清單。"""
-    found = _sheet_xml(archive, ws)
-    return _parse_merges(found[1]) if found else []
-
-
 def _filter_row_ranges(archive: zipfile.ZipFile, sheet_path: str, xml: bytes) -> list[tuple[int, int]]:
     """篩選範圍涵蓋的列(1 起算,含兩端):工作表的 autoFilter,以及「格式化為表格」各表格的 autoFilter。"""
     ranges = [(int(r1), int(r2 or r1)) for r1, r2 in _AUTO_FILTER.findall(xml)]
     if b"tablePart" not in xml:
         return ranges
-    folder = posixpath.dirname(sheet_path)
-    rels_path = posixpath.join(folder, "_rels", posixpath.basename(sheet_path) + ".rels")
-    try:
-        rels = archive.read(rels_path)
-    except KeyError:
-        return ranges
-    for attrs in _RELATIONSHIP.findall(rels):
-        if not (_attr(attrs, "Type") or "").endswith("/table"):
+    for rel_type, table_path in _relationships(archive, sheet_path).values():
+        if not rel_type.endswith("/table"):
             continue
-        target = _attr(attrs, "Target") or ""
-        table_path = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join(folder, target))
         try:
             table_xml = archive.read(table_path)
         except KeyError:
@@ -313,22 +317,6 @@ def _parse_hidden(archive: zipfile.ZipFile, sheet_path: str, xml: bytes) -> tupl
     filters = _filter_row_ranges(archive, sheet_path, xml)
     manual = {r - 1 for r in hidden_rows if not any(first <= r <= last for first, last in filters)}
     return manual, hidden_cols
-
-
-def merge_support_ok() -> bool:
-    """在記憶體中建立含合併儲存格的活頁簿,確認目前的 openpyxl 取得到合併範圍。"""
-    wb = Workbook()
-    wb.active.merge_cells("A1:B2")
-    buf = io.BytesIO()
-    wb.save(buf)
-    ro = load_workbook(buf, read_only=True)
-    try:
-        if not getattr(ro.worksheets[0], SHEET_PATH_ATTR, None):
-            return False
-        with zipfile.ZipFile(buf) as archive:
-            return _merge_ranges(archive, ro.worksheets[0]) == [Merge(0, 0, 1, 1)]
-    finally:
-        ro.close()
 
 
 def _read_sheet(
@@ -384,16 +372,23 @@ def _read_workbook(
     wb = load_workbook(path, read_only=True, data_only=True)  # data_only:公式讀取 Excel 存下的計算結果
     try:
         with zipfile.ZipFile(path) as archive:
+            xml_paths = sheet_xml_paths(archive)
             sheets = {}
             for ws in wb.worksheets:
                 if not include_hidden and ws.sheet_state != "visible":  # 隱藏、極度隱藏的工作表預設不讀
                     continue
-                found = _sheet_xml(archive, ws)  # 每個工作表的 XML 只讀一次
                 merges, hidden_rows, hidden_cols = [], set(), []
-                if found:
-                    merges = _parse_merges(found[1])
+                sheet_path = xml_paths.get(ws.title)
+                try:
+                    xml = archive.read(sheet_path) if sheet_path else None  # 每個工作表的 XML 只讀一次
+                except KeyError:
+                    xml = None
+                if xml is None:  # 檔案結構異常:合併格不填值、隱藏列欄照常讀取,但不影響讀取資料
+                    logger.warning("%s 工作表「%s」找不到工作表 XML,合併儲存格與隱藏列欄不會處理", source, ws.title)
+                else:
+                    merges = _parse_merges(xml)
                     if not include_hidden_rows_columns:
-                        hidden_rows, hidden_cols = _parse_hidden(archive, *found)
+                        hidden_rows, hidden_cols = _parse_hidden(archive, sheet_path, xml)
                 header_row = header_rows.get(ws.title.casefold(), header_rows.get(None))
                 sheets[ws.title] = _read_sheet(ws, merges, hidden_rows, hidden_cols, header_row, source)
             return sheets

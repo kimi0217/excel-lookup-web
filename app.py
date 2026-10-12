@@ -80,8 +80,6 @@ def create_app(config: dict | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        if not excel_reader.merge_support_ok():
-            logger.warning(excel_reader.MSG_MERGE_UNSUPPORTED, excel_reader.SHEET_PATH_ATTR)
         tasks = [asyncio.create_task(reload_loop(catalog, reload_interval))]
         if backup_dir:
             tasks.append(asyncio.create_task(backup_loop(data_dir, backup_dir, keep_days, include_subfolders)))

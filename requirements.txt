@@ -2,8 +2,8 @@
 fastapi==0.142.4
 uvicorn==0.54.0
 pandas==3.0.6  # 需要 Python 3.11 以上
-# 注意:程式用到 openpyxl 的內部屬性 _worksheet_path 讀取合併儲存格範圍(唯讀模式不提供),
-# 非公開 API,升級後可能失效;升級前務必先跑 pytest(tests/test_merge_support.py 會檢查)
+# openpyxl 唯讀模式不提供合併儲存格與隱藏列欄,程式依 OOXML 規範自行從檔案中的 XML 解析(不依賴 openpyxl 內部屬性);
+# 升級前仍請先跑 pytest(數字格式、日期判斷等行為可能隨版本改變)
 openpyxl==3.1.5
 # 測試
 pytest==9.1.1

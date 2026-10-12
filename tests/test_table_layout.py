@@ -1,7 +1,5 @@
 """表頭偵測、合併儲存格、欄位名稱整理。"""
 
-import io
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -191,11 +189,5 @@ def test_title_not_shown_as_data(data_dir):
 
 
 def test_merge_parsing_with_namespace_prefix():
-    class FakeSheet:
-        _worksheet_path = "xl/worksheets/sheet1.xml"
-
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("xl/worksheets/sheet1.xml", '<x:mergeCells count="2"><x:mergeCell ref="B4:B6"/><x:mergeCell ref="AA1"/></x:mergeCells>')
-    with zipfile.ZipFile(buf) as z:
-        assert excel_reader._merge_ranges(z, FakeSheet()) == [Merge(3, 1, 5, 1), Merge(0, 26, 0, 26)]
+    xml = b'<x:mergeCells count="2"><x:mergeCell ref="B4:B6"/><x:mergeCell ref="AA1"/></x:mergeCells>'
+    assert excel_reader._parse_merges(xml) == [Merge(3, 1, 5, 1), Merge(0, 26, 0, 26)]

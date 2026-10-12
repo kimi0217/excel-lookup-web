@@ -67,7 +67,7 @@
 - **搜尋規則**:不分大小寫、/ 與 - 視為相同、忽略數字間的千分位逗號;儲存格之間以分隔字元串接,不會跨儲存格比對。前端醒目標示的規則需與後端一致(static/index.html 的 highlightPattern)。
 - **數字格式**:支援補 0、小數位數、千分位、百分比、貨幣與文字前後綴、正負零分段;分數與科學記號等無法處理的格式以一般格式顯示。
 
-## 風險:openpyxl 內部屬性
-- openpyxl 唯讀模式不提供合併範圍與隱藏列欄,程式透過內部屬性 `_worksheet_path`(excel_reader.SHEET_PATH_ATTR)找到工作表 XML,自行解析 `<mergeCell>`、`<row hidden>`、`<col hidden>`、`<autoFilter>`。
-- 這是非公開 API,升級 openpyxl 後可能改名。取不到時程式不會當掉,但合併儲存格不會填值、隱藏的列與欄也會被讀取;啟動時會檢查(merge_support_ok)並在記錄中印出警告。
-- tests/test_merge_support.py 會在取不到合併範圍時失敗,升級 openpyxl 前務必先跑測試。
+## 工作表 XML 的解析
+- openpyxl 唯讀模式不提供合併範圍與隱藏列欄,程式自行解析工作表 XML 的 `<mergeCell>`、`<row hidden>`、`<col hidden>`、`<autoFilter>`。
+- 工作表 XML 的位置依 OOXML 規範查找(excel_reader.sheet_xml_paths):`_rels/.rels` → 活頁簿(通常是 xl/workbook.xml)→ `<sheet name r:id>` 對應 `xl/_rels/workbook.xml.rels` 的 Target(絕對或相對路徑皆可)。不使用 openpyxl 的內部屬性(tests/test_merge_support.py 會檢查)。
+- 找不到工作表 XML 時不當掉:記錄警告,該工作表的合併儲存格不填值、隱藏的列與欄照常讀取。
