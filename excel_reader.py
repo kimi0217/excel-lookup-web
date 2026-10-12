@@ -332,9 +332,17 @@ def merge_support_ok() -> bool:
 
 
 def _read_sheet(
-    ws, merges: list[Merge], hidden_rows: set[int] | None = None, hidden_cols: list[tuple[int, int]] | None = None
+    ws,
+    merges: list[Merge],
+    hidden_rows: set[int] | None = None,
+    hidden_cols: list[tuple[int, int]] | None = None,
+    header_row: int | None = None,
+    source: str = "",
 ) -> Sheet:
-    """讀出顯示文字的網格,移除隱藏的列與欄後,交給 build_table 偵測表頭、填入合併格、整理欄位。"""
+    """讀出顯示文字的網格,移除隱藏的列與欄後,交給 build_table 偵測表頭、填入合併格、整理欄位。
+
+    header_row 為手動指定的表頭列(Excel 列號,1 起算);超出工作表範圍時記錄警告並改用自動偵測。
+    """
     ws.reset_dimensions()  # 有些程式產生的檔案記錄的範圍不正確,改為實際讀到哪算到哪
     grid: list[list[str]] = []
     is_text: list[list[bool]] = []
@@ -347,15 +355,32 @@ def _read_sheet(
     grid = [(r + [""] * width)[:width] for r in grid]
     is_text = [(r + [False] * width)[:width] for r in is_text]
     merges = [m for m in merges if m.min_row < len(grid)]
-    if hidden_rows or hidden_cols:
+    header_index = None
+    if header_row is not None:
+        if header_row <= len(grid):
+            header_index = header_row - 1
+        else:
+            logger.warning(
+                "header_overrides 指定 %s 工作表「%s」的表頭為第 %d 列,但工作表只有 %d 列,改用自動偵測",
+                source, ws.title, header_row, len(grid),
+            )
+    rows = {r for r in hidden_rows or set() if r < len(grid) and r != header_index}  # 指定的表頭列即使隱藏也使用
+    if rows or hidden_cols:
         cols = {c for first, last in hidden_cols or [] for c in range(first, min(last, width - 1) + 1)}
-        rows = {r for r in hidden_rows or set() if r < len(grid)}
         grid, is_text, merges = drop_hidden(grid, is_text, merges, rows, cols)
-    columns, rows = build_table(grid, is_text, merges)
+        if header_index is not None:  # 上方的隱藏列移除後,表頭往上移
+            header_index -= sum(1 for r in rows if r < header_index)
+    columns, rows = build_table(grid, is_text, merges, header_index)
     return Sheet.build(columns, rows)
 
 
-def _read_workbook(path: Path, include_hidden: bool, include_hidden_rows_columns: bool) -> dict[str, Sheet]:
+# 手動指定的表頭列:工作表名稱(casefold)→ Excel 列號;鍵為 None 時套用到檔案中的所有工作表
+HeaderRows = dict[str | None, int]
+
+
+def _read_workbook(
+    path: Path, include_hidden: bool, include_hidden_rows_columns: bool, header_rows: HeaderRows, source: str
+) -> dict[str, Sheet]:
     wb = load_workbook(path, read_only=True, data_only=True)  # data_only:公式讀取 Excel 存下的計算結果
     try:
         with zipfile.ZipFile(path) as archive:
@@ -369,19 +394,25 @@ def _read_workbook(path: Path, include_hidden: bool, include_hidden_rows_columns
                     merges = _parse_merges(found[1])
                     if not include_hidden_rows_columns:
                         hidden_rows, hidden_cols = _parse_hidden(archive, *found)
-                sheets[ws.title] = _read_sheet(ws, merges, hidden_rows, hidden_cols)
+                header_row = header_rows.get(ws.title.casefold(), header_rows.get(None))
+                sheets[ws.title] = _read_sheet(ws, merges, hidden_rows, hidden_cols, header_row, source)
             return sheets
     finally:
         wb.close()  # 先釋放檔案,Windows 才能刪除暫存檔
 
 
 def read_excel_safely(
-    path: Path, include_hidden: bool = False, include_hidden_rows_columns: bool = False
+    path: Path,
+    include_hidden: bool = False,
+    include_hidden_rows_columns: bool = False,
+    header_rows: HeaderRows | None = None,
+    source: str | None = None,
 ) -> dict[str, Sheet]:
     """複製到暫存資料夾後讀取工作表,讀完立即刪除暫存檔。
 
     include_hidden 為 False 時不讀取隱藏與極度隱藏的工作表;include_hidden_rows_columns 為 False 時
-    不讀取手動隱藏的列與欄(篩選造成的隱藏列照常讀取)。
+    不讀取手動隱藏的列與欄(篩選造成的隱藏列照常讀取)。header_rows 為手動指定的表頭列。
+    source 是記錄訊息中顯示的檔名(預設為檔名)。
 
     讀取失敗時拋出 ExcelReadError,訊息為簡短的中文原因。
     """
@@ -392,13 +423,33 @@ def read_excel_safely(
         except OSError as exc:
             raise ExcelReadError(MSG_UNAVAILABLE) from exc
         try:
-            return _read_workbook(tmp_path, include_hidden, include_hidden_rows_columns)
+            return _read_workbook(tmp_path, include_hidden, include_hidden_rows_columns, header_rows or {}, source or path.name)
         except Exception as exc:
             reason = _describe_failure(tmp_path)
             logger.debug("無法讀取 %s:%s(%r)", path.name, reason, exc)  # 警告由 Catalog 在狀態改變時記錄
             raise ExcelReadError(reason) from exc
         finally:
             tmp_path.unlink(missing_ok=True)
+
+
+def parse_header_overrides(raw: object) -> dict[str, int]:
+    """整理 config 的 header_overrides:{"醫材.xlsx": 3, "醫材.xlsx/工作表2": 2}。
+
+    鍵為相對於 data_dir 的檔案路徑(含副檔名),可加上「/工作表名稱」;不分大小寫,\\ 視為 /。
+    值為 Excel 上看到的列號(1 起算)。格式錯誤的設定記錄警告後略過。
+    """
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning("header_overrides 的格式錯誤(應為 {\"檔名.xlsx\": 列號}),已略過")
+        return {}
+    result = {}
+    for key, row in raw.items():
+        if isinstance(row, bool) or not isinstance(row, int) or row < 1:
+            logger.warning("header_overrides 中「%s」的值 %r 不是有效的列號(須為 1 以上的整數),已略過", key, row)
+            continue
+        result[str(key).replace("\\", "/").strip("/").casefold()] = row
+    return result
 
 
 @dataclass
@@ -424,12 +475,15 @@ class Catalog:
         include_hidden_rows_columns: bool = False,
         include_subfolders: bool = True,
         exclude: list[Path] | None = None,
+        header_overrides: dict | None = None,
     ) -> None:
         self.data_dir = data_dir
         self.include_hidden = include_hidden
         self.include_hidden_rows_columns = include_hidden_rows_columns
         self.include_subfolders = include_subfolders
         self.exclude = exclude or []  # 不讀取的資料夾(位於 data_dir 底下的備份資料夾)
+        self.header_overrides = parse_header_overrides(header_overrides)
+        self._override_warned: set[str] = set()  # 已記錄過警告的 header_overrides 設定
         self._entries: dict[str, _Entry] = {}
         self._files: dict[str, FileStat] = {}  # 最後一次成功列出的檔案
         self._refresh_lock = threading.Lock()
@@ -473,6 +527,7 @@ class Catalog:
                 self._offline_logged = False
             self.folder_ok = True
             self._files = files
+            self._warn_unmatched_files(files)
             for gone in set(self._entries) - set(files):
                 del self._entries[gone]
             pending = []
@@ -484,9 +539,14 @@ class Catalog:
             for _, name, key in sorted(pending):
                 path = files[name].path
                 previous = self._entries.get(name)
+                relative = files[name].relative
+                header_rows = self._header_rows(relative)
                 try:
-                    sheets = read_excel_safely(path, self.include_hidden, self.include_hidden_rows_columns)
+                    sheets = read_excel_safely(
+                        path, self.include_hidden, self.include_hidden_rows_columns, header_rows, relative
+                    )
                     self._entries[name] = _Entry(key, sheets)
+                    self._warn_unmatched_sheets(relative, header_rows, sheets)
                 except ExcelReadError as exc:
                     self._entries[name] = _Entry(key, {}, str(exc))
                     if previous is None or previous.error != str(exc):
@@ -495,6 +555,37 @@ class Catalog:
                     if previous is not None and previous.error:
                         logger.info("已可讀取 %s", files[name].relative)
             self.last_success = time.time()
+
+    def _header_rows(self, relative: str) -> HeaderRows:
+        """某檔案的手動表頭設定:{None: 整個檔案, 工作表名稱(casefold): 該工作表}。"""
+        key = relative.casefold()
+        result: HeaderRows = {}
+        for override, row in self.header_overrides.items():
+            if override == key:
+                result[None] = row
+            elif override.startswith(key + "/"):
+                result[override[len(key) + 1 :]] = row
+        return result
+
+    def _warn_once(self, key: str, message: str, *args) -> None:
+        if key not in self._override_warned:
+            self._override_warned.add(key)
+            logger.warning(message, *args)
+
+    def _warn_unmatched_files(self, files: dict[str, FileStat]) -> None:
+        known = {f.relative.casefold() for f in files.values()}
+        for override in self.header_overrides:
+            if override not in known and not any(override.startswith(k + "/") for k in known):
+                self._warn_once(override, "header_overrides 設定的檔案不存在,已略過:%s", override)
+
+    def _warn_unmatched_sheets(self, relative: str, header_rows: HeaderRows, sheets: dict[str, Sheet]) -> None:
+        titles = {title.casefold() for title in sheets}
+        for sheet in header_rows:
+            if sheet is not None and sheet not in titles:
+                self._warn_once(
+                    f"{relative.casefold()}/{sheet}",
+                    "header_overrides 設定的工作表不存在(或是未讀取的隱藏工作表),已略過:%s/%s", relative, sheet,
+                )
 
     def _summary(self, name: str) -> dict:
         """單一檔案的狀態摘要:status 為 ok、error(附 error 原因)或 loading(尚未載入)。"""
