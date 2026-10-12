@@ -30,6 +30,10 @@
   .brand { font-size: 1.15rem; font-weight: 700; color: var(--fg); }
   .brand:hover { text-decoration: none; }
   .updated { color: var(--muted); font-size: 0.9rem; }
+  .folder-banner {
+    background: var(--warn-bg); border-bottom: 1px solid var(--warn-line); color: var(--warn-fg);
+    padding: 10px 24px; text-align: center; font-size: 0.95rem;
+  }
 
   main { flex: 1; width: 100%; max-width: 1400px; margin: 0 auto; padding: 20px 24px 32px; }
   footer {
@@ -146,6 +150,7 @@
   <a class="brand" href="#/">Excel 查詢</a>
   <span id="updated" class="updated"></span>
 </header>
+<div id="folderBanner" class="folder-banner" role="status" hidden></div>
 <main id="app"></main>
 <footer>資料為唯讀,如需修改請聯絡資料負責人</footer>
 
@@ -155,6 +160,7 @@ const app = document.getElementById("app");
 const PAGE_SIZE = 100;
 const DEBOUNCE_MS = 250;
 const POLL_MS = 2000;
+const STATUS_POLL_MS = 15000;  // 定期更新資料夾連線狀態與最後更新時間
 let pollTimer = null;   // 載入中時定期更新
 let viewToken = 0;      // 切換頁面後,舊頁面的非同步結果一律丟棄
 
@@ -214,14 +220,32 @@ function parseHash() {
 
 function stopPolling() { clearTimeout(pollTimer); pollTimer = null; }
 
-// 頂部顯示資料最後更新時間(所有檔案中最新的修改時間)
-async function refreshUpdated(cats) {
-  try {
-    cats = cats || await getJson("/api/categories");
-    const latest = cats.map((c) => c.updated).filter(Boolean).sort().pop();
-    document.getElementById("updated").textContent = latest ? `資料最後更新:${latest}` : "";
-  } catch { /* 不影響主畫面 */ }
+// 「2026-10-12 21:34」→ 今天顯示「21:34」,其他日子顯示「10-12 21:34」
+function shortTime(stamp) {
+  const [date, time] = stamp.split(" ");
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return date === today ? time : `${date.slice(5)} ${time}`;
 }
+
+// 頂部顯示資料最後更新時間(所有檔案中最新的修改時間),以及資料夾無法連線的提示
+async function refreshStatus(body) {
+  try {
+    body = body || await getJson("/api/categories");
+  } catch { return; }  // 不影響主畫面
+  const latest = body.files.map((c) => c.updated).filter(Boolean).sort().pop();
+  document.getElementById("updated").textContent = latest ? `資料最後更新:${latest}` : "";
+  const banner = document.getElementById("folderBanner");
+  if (body.folder.ok) {
+    banner.hidden = true;
+  } else {
+    banner.textContent = body.folder.last_success
+      ? `⚠ Excel 資料夾暫時無法連線,目前顯示的是 ${shortTime(body.folder.last_success)} 的資料`
+      : "⚠ Excel 資料夾暫時無法連線,尚未讀取到任何資料";
+    banner.hidden = false;
+  }
+}
+setInterval(() => refreshStatus(), STATUS_POLL_MS);
 
 // ---------- 路由 ----------
 
@@ -268,8 +292,10 @@ function renderHome() {
   });
 
   async function load() {
+    let body;
     try {
-      cats = await getJson("/api/categories");
+      body = await getJson("/api/categories");
+      cats = body.files;
     } catch (err) {
       if (token !== viewToken) return;
       document.getElementById("summary").textContent = `無法載入檔案清單:${err.message}`;
@@ -277,7 +303,7 @@ function renderHome() {
       return;
     }
     if (token !== viewToken) return;
-    refreshUpdated(cats);
+    refreshStatus(body);
     drawCards(cats, filter.value);
     const loading = cats.filter((c) => c.status === "loading").length;
     document.getElementById("homeNotice").innerHTML = loading
@@ -348,7 +374,7 @@ function renderSearch(q) {
     const v = input.value.trim();
     if (v) location.hash = `#/search?${new URLSearchParams({ q: v })}`;
   });
-  refreshUpdated();
+  refreshStatus();
   if (!q) { document.getElementById("summary").textContent = "請輸入關鍵字"; return; }
 
   async function load() {
@@ -426,7 +452,7 @@ function renderFile(name, params) {
       return;
     }
     if (token !== viewToken) return;
-    refreshUpdated();
+    refreshStatus();
     document.getElementById("fileMeta").textContent =
       [info.updated && `檔案更新:${info.updated}`, info.rows != null && `${fmtNumber(info.rows)} 筆`].filter(Boolean).join(" · ");
     if (info.status === "loading") {

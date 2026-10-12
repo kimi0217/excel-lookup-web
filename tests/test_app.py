@@ -73,7 +73,7 @@ def test_search_respects_max_results(data_dir):
 
 
 def test_api_categories(client):
-    cats = client.get("/api/categories").json()
+    cats = client.get("/api/categories").json()["files"]
     assert [(c["name"], c["status"], c["error"], c["rows"], c["sheets"]) for c in cats] == [
         ("員工", "ok", None, 2, 1),
         ("設備", "ok", None, 2, 1),

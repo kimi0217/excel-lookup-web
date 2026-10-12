@@ -150,7 +150,7 @@ def test_app_preloads_in_background_and_reports_loading(data_dir, monkeypatch):
     with TestClient(app) as client:
         try:
             def statuses():
-                return {c["name"]: c["status"] for c in client.get("/api/categories").json()}
+                return {c["name"]: c["status"] for c in client.get("/api/categories").json()["files"]}
 
             # 小檔已載入,大檔仍在載入中;搜尋立即回應,不必等待大檔
             assert wait_until(lambda: statuses() == {"小檔": "ok", "大檔": "loading"})

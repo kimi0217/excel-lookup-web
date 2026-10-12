@@ -10,6 +10,7 @@ import pytest
 HTML = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text(encoding="utf-8")
 SCRIPT = HTML[HTML.index("<script>") + len("<script>") : HTML.index("</script>")]
 HELPERS = SCRIPT[SCRIPT.index("function escapeHtml") : SCRIPT.index("function fmtNumber")]
+SHORT_TIME = SCRIPT[SCRIPT.index("function shortTime") : SCRIPT.index("// 頂部顯示資料最後更新時間")]
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="需要 node")
 
@@ -40,3 +41,17 @@ def test_search_rules_still_apply():
 def test_html_escaped():
     assert highlight("b", "<b>") == "&lt;<mark>b</mark>&gt;"
     assert highlight("", "<i>") == "&lt;i&gt;"
+
+
+def run_js(code: str) -> str:
+    result = subprocess.run(["node", "-e", code], capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_short_time_today_and_other_day():
+    code = SHORT_TIME + """
+    const d = new Date(); const p = (n) => String(n).padStart(2, "0");
+    const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    process.stdout.write(shortTime(`${today} 09:05`) + "|" + shortTime("2020-03-04 21:34"));"""
+    assert run_js(code) == "09:05|03-04 21:34"

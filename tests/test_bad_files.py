@@ -121,7 +121,7 @@ def test_search_bad_category_returns_reason(client):
 
 def test_categories_mark_failed_files(client):
     # 預先載入後,不必先搜尋就能在分類清單看到哪些檔案讀取失敗
-    cats = {c["name"]: (c["status"], c["error"]) for c in client.get("/api/categories").json()}
+    cats = {c["name"]: (c["status"], c["error"]) for c in client.get("/api/categories").json()["files"]}
     assert cats == {
         "加密": ("error", excel_reader.MSG_ENCRYPTED),
         "員工": ("ok", None),

@@ -110,7 +110,8 @@ def is_our_service(port: int, timeout: float = 2) -> bool:
     """連接埠上執行的是否就是本服務。"""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/categories", timeout=timeout) as resp:
-            return isinstance(json.loads(resp.read().decode("utf-8")), list)
+            body = json.loads(resp.read().decode("utf-8"))
+            return isinstance(body, dict) and isinstance(body.get("files"), list)
     except (OSError, ValueError):
         return False
 
