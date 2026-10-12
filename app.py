@@ -22,10 +22,13 @@ BACKUP_CHECK_SECONDS = 60 * 60  # 每小時檢查一次,當日已備份就略過
 logger = logging.getLogger(__name__)
 
 
-def load_config() -> dict:
-    """優先讀取 config.json(含真實路徑,不進版控),否則使用 config.example.json。"""
-    for name in ("config.json", "config.example.json"):
-        path = BASE_DIR / name
+def load_config(config_path: Path | None = None) -> dict:
+    """讀取設定檔。未指定時優先讀取 config.json(含真實路徑,不進版控),否則使用 config.example.json。
+
+    相對路徑(data_dir、backup_dir)以專案資料夾為準。
+    """
+    candidates = [config_path] if config_path else [BASE_DIR / "config.json", BASE_DIR / "config.example.json"]
+    for path in candidates:
         if path.is_file():
             # utf-8-sig:Windows 記事本可能存成含 BOM 的 UTF-8
             config = json.loads(path.read_text(encoding="utf-8-sig"))

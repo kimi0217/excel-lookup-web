@@ -179,8 +179,9 @@ def read_excel_safely(path: Path, include_hidden: bool = False) -> dict[str, She
         try:
             return _read_workbook(tmp_path, include_hidden)
         except Exception as exc:
-            logger.warning("無法讀取 %s:%r", path.name, exc)
-            raise ExcelReadError(_describe_failure(tmp_path)) from exc
+            reason = _describe_failure(tmp_path)
+            logger.warning("無法讀取 %s:%s(%s)", path.name, reason, type(exc).__name__)
+            raise ExcelReadError(reason) from exc
         finally:
             tmp_path.unlink(missing_ok=True)
 

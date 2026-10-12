@@ -24,3 +24,7 @@ Thumbs.db
 
 # 測試用產生的 Excel(由 tests/fixtures/generate_fixtures.py 產生)
 tests/fixtures/generated/
+
+# 執行記錄
+app.log*
+install.log
