@@ -1,0 +1,3 @@
+# Windows 批次檔必須是 CRLF 換行;macOS .command 必須是 LF
+*.bat text eol=crlf
+*.command text eol=lf

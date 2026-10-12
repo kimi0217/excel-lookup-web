@@ -15,7 +15,7 @@
 - 測試:pytest
 
 ## 指令
-- 啟動:python app.py → http://localhost:8000
+- 啟動:python app.py → http://localhost:8000(開發用;給使用者的是「啟動.bat」/「啟動.command」)
 - 測試:pytest
 - 產生各種格式的測試檔:python tests/fixtures/generate_fixtures.py(輸出到 tests/fixtures/generated/,不進版控)
 
@@ -25,6 +25,17 @@
 - `table_layout.py`:表頭偵測、合併儲存格填值、欄位名稱整理(純邏輯,不碰檔案)
 - `cell_format.py`:儲存格值 → 顯示文字(日期、數字格式、貨幣),搜尋用正規化
 - `backup.py`:每日備份到 backups/YYYY-MM-DD/,保留 backup_keep_days 天
+- `deploy/`:給不懂程式的使用者的部署腳本,由根目錄的 `.bat`(Windows)/`.command`(macOS)呼叫
+  - `common.py`:共用(內網 IP、連接埠檢查、資料夾選擇、config.json 產生);安裝前就會執行,只能用標準函式庫
+  - `install.py`:建立 venv、安裝套件,依 pip 輸出判斷失敗原因
+  - `launcher.py`:第一次設定(選資料夾產生 config.json)、啟動前檢查、顯示網址;`--background` 為自動啟動用
+  - `autostart.py`:Windows 工作排程器(XML 建立)/ macOS LaunchAgent
+
+## 部署腳本的規則
+- 所有畫面訊息用繁體中文,出錯時說明原因與處理方式(common.print_error),不要只顯示英文錯誤
+- `.bat` 必須 UTF-8 無 BOM、CRLF 換行,前兩行為 `@echo off`、`chcp 65001 >nul`;中文只能出現在 echo/rem/title,echo 訊息用全形括號(半形括號在 if 區塊中會提早結束區塊)。.gitattributes 強制換行格式,tests/test_deploy.py 會檢查
+- `.bat` 只負責找到 Python 並呼叫 deploy/ 的腳本,邏輯一律寫在 Python
+- 自動啟動以目前使用者「登入後」執行(讀得到網路共用資料夾、不需密碼);工作排程器一定要用 XML 建立,才能取消預設的 3 天執行上限與電池限制
 
 ## 設計決定
 - **讀檔用 openpyxl 唯讀模式,不用 pandas.read_excel**:需要每個儲存格的數字格式(還原開頭 0、貨幣、千分位)與工作表可見狀態,pandas 拿不到。pandas 只用於搜尋(Series.str.contains)。
