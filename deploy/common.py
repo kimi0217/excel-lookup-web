@@ -55,6 +55,78 @@ def is_windows_admin() -> bool:
         return False
 
 
+# Windows 帳號比對:以系統管理員身分執行時,UAC 可能要求輸入「另一個」管理員帳號的密碼,
+# 這時程式以那個帳號執行。用 WTS 查出目前工作階段(登入桌面)的使用者,與執行程式的帳號比對。
+WTS_USER_NAME, WTS_DOMAIN_NAME = 5, 7  # WTS_INFO_CLASS
+NAME_SAM_COMPATIBLE = 2  # EXTENDED_NAME_FORMAT:DOMAIN\user
+
+
+def _wts_session_text(session_id: int, info_class: int) -> str | None:
+    import ctypes
+    from ctypes import wintypes
+
+    wtsapi = ctypes.WinDLL("wtsapi32")
+    wtsapi.WTSQuerySessionInformationW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD),
+    ]
+    wtsapi.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+    buffer, size = ctypes.c_void_p(), wintypes.DWORD()
+    if not wtsapi.WTSQuerySessionInformationW(None, session_id, info_class, ctypes.byref(buffer), ctypes.byref(size)):
+        return None
+    try:
+        return ctypes.wstring_at(buffer.value) if buffer.value else None
+    finally:
+        wtsapi.WTSFreeMemory(buffer)
+
+
+def windows_desktop_user() -> str | None:
+    """目前登入桌面的使用者(DOMAIN\\user);取不到或非 Windows 時回傳 None。
+
+    查的是「這個程式所在的工作階段」的使用者:以其他帳號提高權限時,程式仍在原本使用者的工作階段中,
+    所以取得的是平常登入的帳號;遠端桌面連線時也是連線的那個使用者(不一定是主控台)。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        session = wintypes.DWORD()
+        if not kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session)):
+            session = wintypes.DWORD(kernel32.WTSGetActiveConsoleSessionId())  # 退而使用主控台工作階段
+        user = _wts_session_text(session.value, WTS_USER_NAME)
+        if not user:
+            return None
+        domain = _wts_session_text(session.value, WTS_DOMAIN_NAME)
+        return f"{domain}\\{user}" if domain else user
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def windows_process_user() -> str | None:
+    """執行這個程式的帳號(DOMAIN\\user,取自程式的存取權杖,不看環境變數);取不到或非 Windows 時回傳 None。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        secur32 = ctypes.WinDLL("secur32")
+        size = wintypes.ULONG(512)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not secur32.GetUserNameExW(NAME_SAM_COMPATIBLE, buffer, ctypes.byref(size)):
+            return None
+        return buffer.value or None
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def same_windows_account(a: str, b: str) -> bool:
+    """比對兩個帳號(DOMAIN\\user),不分大小寫;其中一個沒有網域時只比對名稱。"""
+    a_domain, _, a_user = a.casefold().rpartition("\\")
+    b_domain, _, b_user = b.casefold().rpartition("\\")
+    if a_user != b_user:
+        return False
+    return not a_domain or not b_domain or a_domain == b_domain
+
+
 # ---------- 訊息 ----------
 
 def print_banner(lines: list[str]) -> None:

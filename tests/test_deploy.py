@@ -396,12 +396,72 @@ def as_admin(monkeypatch, admin: bool) -> None:
     monkeypatch.setattr(common, "is_windows_admin", lambda: admin)
 
 
-def test_autostart_refuses_to_run_as_admin(windows, monkeypatch, capsys):
-    """以系統管理員身分執行時,排程工作可能建在輸入密碼的管理員帳號底下,所以不建立工作。"""
-    as_admin(monkeypatch, True)
+def run_as(monkeypatch, admin: bool, desktop: str | None, process: str | None) -> None:
+    """模擬:是否已提高權限、目前登入桌面的使用者、執行這個程式的帳號(None 表示取不到)。"""
+    as_admin(monkeypatch, admin)
+    monkeypatch.setattr(common, "windows_desktop_user", lambda: desktop)
+    monkeypatch.setattr(common, "windows_process_user", lambda: process)
+
+
+@pytest.mark.parametrize("admin", [True, False])
+def test_autostart_same_account_allowed(windows, monkeypatch, capsys, admin):
+    """同一個帳號:一般執行、管理員帳號在 UAC 按「是」、UAC 關閉時的管理員帳號,都照常建立。"""
+    run_as(monkeypatch, admin, desktop="OFFICE\\kimi", process="office\\KIMI")  # 不分大小寫
+    assert autostart.install_windows({"port": 8000}) == 0
+    assert any(c[:2] == ["schtasks", "/Create"] for c in windows.calls)
+
+
+@pytest.mark.parametrize("admin", [True, False])
+def test_autostart_other_account_refused(windows, monkeypatch, capsys, admin):
+    """輸入了別的管理員帳號密碼(或以其他使用者身分執行):工作會建在那個帳號底下,所以拒絕。"""
+    run_as(monkeypatch, admin, desktop="OFFICE\\kimi", process="OFFICE\\it-admin")
+    assert autostart.install_windows({"port": 8000}) == 1
+    assert windows.calls == []
+    out = capsys.readouterr().out
+    assert "請用平常登入的帳號直接點兩下" in out
+    assert "OFFICE\\kimi" in out and "OFFICE\\it-admin" in out
+
+
+@pytest.mark.parametrize(("desktop", "process"), [(None, "OFFICE\\kimi"), ("OFFICE\\kimi", None), (None, None)])
+def test_autostart_unknown_user_refuses_admin(windows, monkeypatch, capsys, desktop, process):
+    """取不到桌面使用者(或執行帳號)時無法比對:以系統管理員身分執行就拒絕。"""
+    run_as(monkeypatch, True, desktop, process)
     assert autostart.install_windows({"port": 8000}) == 1
     assert windows.calls == []
     assert "請不要以系統管理員身分執行這個檔案,直接點兩下即可" in capsys.readouterr().out
+
+
+def test_autostart_unknown_user_allows_non_admin(windows, monkeypatch):
+    run_as(monkeypatch, False, None, None)
+    assert autostart.install_windows({"port": 8000}) == 0
+
+
+def test_task_created_for_process_user(windows, monkeypatch):
+    run_as(monkeypatch, True, desktop="OFFICE\\kimi", process="OFFICE\\kimi")
+    users = []
+    monkeypatch.setattr(autostart, "build_task_xml", lambda user, **kw: users.append(user) or "<Task/>")
+    monkeypatch.setenv("USERDOMAIN", "OTHER")
+    monkeypatch.setenv("USERNAME", "env-user")
+    assert autostart.install_windows({"port": 8000}) == 0
+    assert users == ["OFFICE\\kimi"]  # 排程工作的帳號用實際比對過的帳號,不用環境變數
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("OFFICE\\kimi", "office\\KIMI", True),
+        ("OFFICE\\kimi", "OFFICE\\admin", False),
+        ("OFFICE\\kimi", "PC01\\kimi", False),  # 同名的本機帳號與網域帳號是不同帳號
+        ("kimi", "PC01\\kimi", True),  # 只取到名稱時只比對名稱
+    ],
+)
+def test_same_windows_account(a, b, same):
+    assert common.same_windows_account(a, b) is same
+
+
+def test_user_lookup_off_windows():
+    assert common.windows_desktop_user() is None
+    assert common.windows_process_user() is None
 
 
 def test_autostart_does_not_touch_firewall(windows, monkeypatch, capsys):
