@@ -16,6 +16,7 @@ import pytest
 from openpyxl import Workbook
 
 from deploy import autostart, common, install, launcher
+from deploy import firewall
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK_NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
@@ -349,7 +350,8 @@ def test_preflight_requires_install(monkeypatch, tmp_path, capsys):
 def test_windows_install_reports_access_denied(monkeypatch, capsys):
     monkeypatch.setattr(autostart, "run_command", lambda cmd: (1, "錯誤: 存取被拒。"))
     assert autostart.install_windows({"port": 8000}) == 1
-    assert "以系統管理員身分執行" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "系統管理員" in out and "以系統管理員身分執行" not in out  # 不可建議以系統管理員身分執行
 
 
 def test_windows_remove_when_not_configured(monkeypatch, capsys):
@@ -358,7 +360,7 @@ def test_windows_remove_when_not_configured(monkeypatch, capsys):
     assert "目前沒有設定自動啟動" in capsys.readouterr().out
 
 
-# ---------- Windows 防火牆 ----------
+# ---------- Windows:自動啟動與防火牆分開設定 ----------
 
 class FakeWindows:
     """記錄執行的系統指令;schtasks 與 netsh 依設定回傳結果。"""
@@ -375,92 +377,141 @@ class FakeWindows:
             return (0 if self.rule_exists else 1), ""
         return (0 if self.netsh_ok else 1), "" if self.netsh_ok else "要求的操作需要提高的權限。"
 
-    def netsh(self, action):
-        return [c for c in self.calls if c[:4] == ["netsh", "advfirewall", "firewall", action]]
+    def netsh(self, action=None):
+        return [c for c in self.calls if c[:3] == ["netsh", "advfirewall", "firewall"] and action in (None, c[3])]
 
 
 @pytest.fixture
 def windows(monkeypatch):
     fake = FakeWindows()
     monkeypatch.setattr(autostart, "run_command", fake)
+    monkeypatch.setattr(firewall, "run_command", fake)
     monkeypatch.setattr(autostart, "start_now_or_explain", lambda port, start: None)
     monkeypatch.setattr(autostart, "wait_until_stopped", lambda port: True)
     monkeypatch.setattr(autostart, "configured_port", lambda: 8080)
     return fake
 
 
-def test_install_adds_firewall_rule_as_admin(windows, monkeypatch, capsys):
-    monkeypatch.setattr(autostart, "is_windows_admin", lambda: True)
-    assert autostart.install_windows({"port": 8080}) == 0
+def as_admin(monkeypatch, admin: bool) -> None:
+    monkeypatch.setattr(common, "is_windows_admin", lambda: admin)
+
+
+def test_autostart_refuses_to_run_as_admin(windows, monkeypatch, capsys):
+    """以系統管理員身分執行時,排程工作可能建在輸入密碼的管理員帳號底下,所以不建立工作。"""
+    as_admin(monkeypatch, True)
+    assert autostart.install_windows({"port": 8000}) == 1
+    assert windows.calls == []
+    assert "請不要以系統管理員身分執行這個檔案,直接點兩下即可" in capsys.readouterr().out
+
+
+def test_autostart_does_not_touch_firewall(windows, monkeypatch, capsys):
+    as_admin(monkeypatch, False)
+    assert autostart.install_windows({"port": 8000}) == 0
+    assert any(c[:2] == ["schtasks", "/Create"] for c in windows.calls)
+    assert windows.netsh() == []
+    assert "設定防火牆" in capsys.readouterr().out  # 提示下一步
+
+
+def test_autostart_remove_does_not_touch_firewall(windows, monkeypatch):
+    as_admin(monkeypatch, True)
+    windows.rule_exists = True
+    assert autostart.remove_windows() == 0
+    assert windows.netsh() == []
+
+
+def test_firewall_add_as_admin(windows, monkeypatch, config_path, capsys):
+    as_admin(monkeypatch, True)
+    config_path.write_text(json.dumps({"data_dir": "/資料", "port": 8080}), encoding="utf-8")
+    assert firewall.add_rule() == 0
     added = windows.netsh("add")
     assert added == [[
-        "netsh", "advfirewall", "firewall", "add", "rule", f"name={autostart.FIREWALL_RULE}",
+        "netsh", "advfirewall", "firewall", "add", "rule", f"name={firewall.RULE_NAME}",
         "dir=in", "action=allow", "protocol=TCP", "localport=8080", "profile=private,domain",
     ]]
-    # 先刪除同名的舊規則(連接埠可能改過),再新增
+    # 重複執行時取代舊規則:先刪除同名規則(連接埠可能改過)再新增
     assert windows.calls.index(windows.netsh("delete")[0]) < windows.calls.index(added[0])
     out = capsys.readouterr().out
     assert "已新增防火牆規則" in out and "8080" in out
 
 
-def test_install_without_admin_still_sets_autostart(windows, monkeypatch, capsys):
-    monkeypatch.setattr(autostart, "is_windows_admin", lambda: False)
-    assert autostart.install_windows({"port": 8000}) == 0
-    assert any(c[:2] == ["schtasks", "/Create"] for c in windows.calls)
-    assert windows.netsh("add") == []
+def test_firewall_add_without_config_uses_default_port(windows, monkeypatch, config_path, capsys):
+    as_admin(monkeypatch, True)
+    assert firewall.add_rule() == 0
+    assert windows.netsh("add")[0][9] == "localport=8000"
+
+
+def test_firewall_add_bad_config_explained(windows, monkeypatch, config_path, capsys):
+    as_admin(monkeypatch, True)
+    config_path.write_text('{"data_dir": "D:\\共用", "port": 8080}', encoding="utf-8")  # 反斜線只寫一個
+    assert firewall.add_rule() == 1
+    assert windows.netsh() == []
+    assert "格式錯誤" in capsys.readouterr().out
+
+
+def test_firewall_add_requires_admin(windows, monkeypatch, config_path, capsys):
+    as_admin(monkeypatch, False)
+    assert firewall.add_rule() == 1
+    assert windows.netsh() == []
     out = capsys.readouterr().out
-    assert "已設定" in out
-    assert "系統管理員" in out and "以系統管理員身分執行" in out and "防火牆" in out
+    assert "系統管理員" in out and "按滑鼠右鍵" in out and "以系統管理員身分執行" in out
 
 
-def test_install_firewall_failure_explained(windows, monkeypatch, capsys):
-    monkeypatch.setattr(autostart, "is_windows_admin", lambda: True)
+def test_firewall_add_failure_explained(windows, monkeypatch, config_path, capsys):
+    as_admin(monkeypatch, True)
     windows.netsh_ok = False
-    assert autostart.install_windows({"port": 8000}) == 0  # 自動啟動已完成
+    assert firewall.add_rule() == 1
     out = capsys.readouterr().out
     assert "無法新增防火牆規則" in out and "要求的操作需要提高的權限" in out
 
 
-def test_remove_deletes_firewall_rule(windows, monkeypatch, capsys):
-    monkeypatch.setattr(autostart, "is_windows_admin", lambda: True)
+def test_firewall_remove(windows, monkeypatch, capsys):
+    as_admin(monkeypatch, True)
     windows.rule_exists = True
-    assert autostart.remove_windows() == 0
-    assert windows.netsh("delete") == [["netsh", "advfirewall", "firewall", "delete", "rule", f"name={autostart.FIREWALL_RULE}"]]
+    assert firewall.remove_rule() == 0
+    assert windows.netsh("delete") == [["netsh", "advfirewall", "firewall", "delete", "rule", f"name={firewall.RULE_NAME}"]]
     assert "已移除防火牆規則" in capsys.readouterr().out
 
 
-def test_remove_firewall_rule_even_without_task(windows, monkeypatch, capsys):
-    monkeypatch.setattr(autostart, "is_windows_admin", lambda: True)
-    windows.task_exists, windows.rule_exists = False, True
-    assert autostart.remove_windows() == 0
-    assert windows.netsh("delete")
-    out = capsys.readouterr().out
-    assert "目前沒有設定自動啟動" in out and "已移除防火牆規則" in out
-
-
-def test_remove_without_admin_explains(windows, monkeypatch, capsys):
-    monkeypatch.setattr(autostart, "is_windows_admin", lambda: False)
-    windows.rule_exists = True
-    assert autostart.remove_windows() == 0
+def test_firewall_remove_when_no_rule(windows, monkeypatch, capsys):
+    as_admin(monkeypatch, False)
+    assert firewall.remove_rule() == 0
     assert windows.netsh("delete") == []
-    out = capsys.readouterr().out
-    assert "已取消自動啟動" in out and "以系統管理員身分執行" in out
+    assert "目前沒有" in capsys.readouterr().out
 
 
-def test_remove_without_rule_is_quiet(windows, monkeypatch, capsys):
-    monkeypatch.setattr(autostart, "is_windows_admin", lambda: False)
-    assert autostart.remove_windows() == 0
-    assert "防火牆" not in capsys.readouterr().out
+def test_firewall_remove_requires_admin(windows, monkeypatch, capsys):
+    as_admin(monkeypatch, False)
+    windows.rule_exists = True
+    assert firewall.remove_rule() == 1
+    assert windows.netsh("delete") == []
+    assert "以系統管理員身分執行" in capsys.readouterr().out
+
+
+def test_firewall_only_on_windows(monkeypatch, capsys):
+    monkeypatch.setattr(common, "IS_WINDOWS", False)
+    assert firewall.main(["add"]) == 0
+    assert "只適用於 Windows" in capsys.readouterr().out
 
 
 def test_is_windows_admin_off_windows():
-    assert autostart.is_windows_admin() is False
+    assert common.is_windows_admin() is False
 
 
-def test_remove_bat_fallback_deletes_firewall_rule():
-    text = (ROOT / "取消開機自動啟動.bat").read_text(encoding="utf-8")
-    fallback = text[text.index(":fallback"):]
-    assert f"netsh advfirewall firewall delete rule name={autostart.FIREWALL_RULE}" in fallback
+def bat_text(name: str) -> str:
+    return (ROOT / f"{name}.bat").read_text(encoding="utf-8")
+
+
+def test_firewall_bat_files():
+    assert "deploy\\firewall.py\" add" in bat_text("設定防火牆")
+    remove = bat_text("移除防火牆設定")
+    assert "deploy\\firewall.py\" remove" in remove
+    fallback = remove[remove.index(":fallback"):]  # 沒有 venv 時直接用 netsh 移除
+    assert f"netsh advfirewall firewall delete rule name={firewall.RULE_NAME}" in fallback
+
+
+def test_autostart_bat_files_do_not_touch_firewall():
+    for name in ("設定開機自動啟動", "取消開機自動啟動"):
+        assert "netsh" not in bat_text(name), name
 
 
 # ---------- 批次檔與 .command 格式 ----------
@@ -471,7 +522,8 @@ COMMAND_FILES = sorted(ROOT.glob("*.command"))
 
 def test_expected_scripts_exist():
     names = {"安裝", "啟動", "設定開機自動啟動", "取消開機自動啟動"}
-    assert {p.stem for p in BAT_FILES} == names
+    windows_only = {"設定防火牆", "移除防火牆設定"}  # macOS 的防火牆在第一次啟動時按「允許」即可
+    assert {p.stem for p in BAT_FILES} == names | windows_only
     assert {p.stem for p in COMMAND_FILES} == names
 
 

@@ -29,7 +29,8 @@
   - `common.py`:共用(內網 IP、連接埠檢查、資料夾選擇、config.json 產生);安裝前就會執行,只能用標準函式庫
   - `install.py`:建立 venv、安裝套件,依 pip 輸出判斷失敗原因
   - `launcher.py`:第一次設定(選資料夾產生 config.json)、啟動前檢查、顯示網址;`--background` 為自動啟動用
-  - `autostart.py`:Windows 工作排程器(XML 建立)與防火牆規則 / macOS LaunchAgent
+  - `autostart.py`:Windows 工作排程器(XML 建立)/ macOS LaunchAgent
+  - `firewall.py`:Windows 防火牆規則(「設定防火牆.bat」/「移除防火牆設定.bat」,僅 Windows,沒有 .command)
 
 ## API 與前端
 - `GET /api/categories`:檔案清單(狀態、筆數、工作表數、檔案修改時間)
@@ -44,7 +45,7 @@
 - `.bat` 必須 UTF-8 無 BOM、CRLF 換行,前兩行為 `@echo off`、`chcp 65001 >nul`;中文只能出現在 echo/rem/title,echo 訊息用全形括號(半形括號在 if 區塊中會提早結束區塊)。.gitattributes 強制換行格式,tests/test_deploy.py 會檢查
 - `.bat` 只負責找到 Python 並呼叫 deploy/ 的腳本,邏輯一律寫在 Python
 - 自動啟動以目前使用者「登入後」執行(讀得到網路共用資料夾、不需密碼);工作排程器一定要用 XML 建立,才能取消預設的 3 天執行上限與電池限制
-- 防火牆規則 `ExcelLookupWeb`(autostart.FIREWALL_RULE):設定自動啟動時先刪後加,TCP、config 的 port、profile=private,domain;需要系統管理員權限,沒有權限時只顯示說明,自動啟動的其他設定照常完成。取消時(含 .bat 沒有 venv 的備援流程)一併移除
+- 自動啟動與防火牆分開:「設定開機自動啟動」偵測到系統管理員權限(common.is_windows_admin)時拒絕並結束,因為 UAC 輸入另一個管理員帳號的密碼時,USERNAME 會是那個帳號,工作會建錯帳號;錯誤訊息也不可建議以系統管理員身分執行。防火牆規則 `ExcelLookupWeb`(firewall.RULE_NAME)只由 firewall.py 處理:需要系統管理員權限,先刪後加(重複執行取代舊規則),TCP、config 的 port、profile=private,domain;「取消開機自動啟動」不碰防火牆
 
 ## 設計決定
 - **讀檔用 openpyxl 唯讀模式,不用 pandas.read_excel**:需要每個儲存格的數字格式(還原開頭 0、貨幣、千分位)與工作表可見狀態,pandas 拿不到。pandas 只用於搜尋(Series.str.contains)。

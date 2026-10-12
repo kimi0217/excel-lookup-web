@@ -2,8 +2,8 @@
 
 - Windows:工作排程器,以目前登入的使用者帳號在登入後於背景執行(讀得到該帳號可存取的網路共用資料夾,
   不需要輸入密碼)。以 XML 建立工作,才能取消預設的「執行超過 3 天自動停止」與「使用電池時不啟動」。
-  同時新增 Windows 防火牆規則,允許私人與網域網路連線到 config 的連接埠(需要系統管理員權限;
-  沒有權限時說明如何以系統管理員身分執行,自動啟動照常設定)。
+  不可以系統管理員身分執行:UAC 要求輸入另一個管理員帳號的密碼時,工作會建在那個帳號底下。
+  防火牆規則由 firewall.py(「設定防火牆.bat」)另外設定。
 - macOS:使用者的 LaunchAgent,登入後於背景執行。
 
 用法:python deploy/autostart.py install | remove
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import plistlib
-import subprocess
 import sys
 import tempfile
 import time
@@ -23,10 +22,9 @@ from xml.sax.saxutils import escape
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from deploy import common  # noqa: E402
-from deploy.common import ConfigError, print_banner, print_error, script  # noqa: E402
+from deploy.common import ConfigError, print_banner, print_error, run_command, script  # noqa: E402
 
 TASK_NAME = "ExcelLookupWeb"  # 工作排程器中的名稱(英文,避免編碼問題)
-FIREWALL_RULE = "ExcelLookupWeb"  # Windows 防火牆規則名稱(英文,避免編碼問題;取消開機自動啟動.bat 也用這個名稱)
 MAC_LABEL = "com.excel-lookup-web"
 MAC_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{MAC_LABEL}.plist"
 LAUNCHER = common.ROOT / "deploy" / "launcher.py"
@@ -107,17 +105,6 @@ def current_windows_user() -> str:
     return f"{domain}\\{user}" if domain else user
 
 
-def run_command(cmd: list[str]) -> tuple[int, str]:
-    """執行系統指令,回傳 (結束碼, 輸出文字)。Windows 指令的輸出使用系統的字碼頁。"""
-    try:
-        result = subprocess.run(cmd, capture_output=True)
-    except OSError as exc:
-        return 1, str(exc)
-    encoding = "oem" if common.IS_WINDOWS else "utf-8"
-    output = (result.stdout + result.stderr).decode(encoding, errors="replace").strip()
-    return result.returncode, output
-
-
 def mac_protected_paths(paths: list[Path]) -> list[Path]:
     """macOS 背景程式預設無權讀取的位置(桌面、文件、下載項目、iCloud)。"""
     home = Path.home()
@@ -190,66 +177,16 @@ def start_now_or_explain(port: int, start) -> None:
 
 # ---------- Windows ----------
 
-def is_windows_admin() -> bool:
-    """目前是否以系統管理員身分執行(新增、刪除防火牆規則需要)。非 Windows 一律為 False。"""
-    try:
-        import ctypes
-
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except (AttributeError, OSError):
-        return False
-
-
-def firewall_rule_command(action: str, port: int | None = None) -> list[str]:
-    """netsh 防火牆規則指令:action 為 show / delete / add(add 需要 port)。"""
-    cmd = ["netsh", "advfirewall", "firewall", action, "rule", f"name={FIREWALL_RULE}"]
-    if action == "add":
-        cmd += ["dir=in", "action=allow", "protocol=TCP", f"localport={port}", "profile=private,domain"]
-    return cmd
-
-
-def add_firewall_rule(port: int) -> None:
-    """允許私人與網域網路連線到 TCP 連接埠 port(不含公用網路)。失敗不影響自動啟動的設定。"""
-    print()
-    if not is_windows_admin():
-        print(f"[注意] 沒有系統管理員權限,無法新增防火牆規則(允許其他電腦連線到連接埠 {port})。")
-        print("自動啟動已設定完成。若其他電腦連不到網頁,請擇一處理:")
-        print(f"  1. 在{script('設定開機自動啟動')}上按滑鼠右鍵,選「以系統管理員身分執行」,再執行一次")
-        print("  2. 第一次啟動時若跳出「Windows 安全性警訊」,勾選「私人網路」後按「允許存取」")
-        print()
-        return
-    run_command(firewall_rule_command("delete"))  # 先刪除同名的舊規則(連接埠可能改過);沒有也無妨
-    code, output = run_command(firewall_rule_command("add", port))
-    if code != 0:
-        print_error(f"無法新增防火牆規則(連接埠 {port})。自動啟動已設定完成,但其他電腦可能連不到網頁。", [
-            f"在{script('設定開機自動啟動')}上按滑鼠右鍵,選「以系統管理員身分執行」,再執行一次",
-            "公司電腦的防火牆若由系統管理員統一管理,請將此視窗截圖交給系統管理員",
-        ], details=output)
-        return
-    print(f"已新增防火牆規則「{FIREWALL_RULE}」:允許私人與網域網路連線到 TCP 連接埠 {port}(不開放公用網路)。")
-    print()
-
-
-def remove_firewall_rule() -> None:
-    """移除防火牆規則;沒有規則時不顯示任何訊息。"""
-    code, _ = run_command(firewall_rule_command("show"))  # 查詢不需要系統管理員權限
-    if code != 0:
-        return
-    print()
-    if not is_windows_admin():
-        print(f"[注意] 防火牆規則「{FIREWALL_RULE}」需要系統管理員權限才能移除。")
-        print(f"請在{script('取消開機自動啟動')}上按滑鼠右鍵,選「以系統管理員身分執行」,再執行一次。")
-        return
-    code, output = run_command(firewall_rule_command("delete"))
-    if code != 0:
-        print_error(f"無法移除防火牆規則「{FIREWALL_RULE}」。", [
-            f"在{script('取消開機自動啟動')}上按滑鼠右鍵,選「以系統管理員身分執行」,再執行一次",
-        ], details=output)
-        return
-    print(f"已移除防火牆規則「{FIREWALL_RULE}」。")
-
-
 def install_windows(config: dict) -> int:
+    if common.is_windows_admin():
+        # 以系統管理員身分執行時,USERNAME 可能是 UAC 輸入密碼的那個管理員帳號,工作會建錯帳號
+        print_error("請不要以系統管理員身分執行這個檔案,直接點兩下即可。", [
+            "關閉這個視窗",
+            f"直接點兩下{script('設定開機自動啟動')}(不要按右鍵選「以系統管理員身分執行」)",
+            f"防火牆需要系統管理員權限,請另外在{script('設定防火牆')}上按滑鼠右鍵,選「以系統管理員身分執行」",
+        ])
+        print("未建立自動啟動的排程工作。")
+        return 1
     user = current_windows_user()
     xml = build_task_xml(
         user=user,
@@ -264,7 +201,10 @@ def install_windows(config: dict) -> int:
     if code != 0:
         denied = any(k in output for k in ("存取被拒", "Access is denied", "拒絕存取"))
         fixes = (
-            [f"在{script('設定開機自動啟動')}上按滑鼠右鍵,選「以系統管理員身分執行」"]
+            [  # 不可改用系統管理員身分執行:工作可能建在別的帳號底下
+                "這台電腦的原則可能不允許一般使用者建立排程工作",
+                "請將此視窗截圖交給系統管理員,由系統管理員開放權限後,再直接點兩下執行",
+            ]
             if denied
             else [f"重新點兩下{script('設定開機自動啟動')}", "仍然失敗時,請將此視窗截圖交給系統管理員"]
         )
@@ -272,8 +212,9 @@ def install_windows(config: dict) -> int:
         return 1
     print(f"已設定:使用者「{user}」登入 Windows 後,約 30 秒會自動在背景啟動服務。")
     print("(需要有人登入這台電腦才會啟動;建議這台電腦保持登入狀態,不要登出。)")
+    print(f"其他電腦若連不到網頁,請在{script('設定防火牆')}上按滑鼠右鍵,選「以系統管理員身分執行」。")
+    print()
     port = int(config.get("port", 8000))
-    add_firewall_rule(port)
     start_now_or_explain(port, lambda: run_command(["schtasks", "/Run", "/TN", TASK_NAME]))
     return 0
 
@@ -309,7 +250,6 @@ def remove_windows() -> int:
             result = 1
         else:
             report_stopped(configured_port())
-    remove_firewall_rule()  # 沒有排程工作時也要移除(可能只剩防火牆規則)
     return result
 
 

@@ -21,7 +21,7 @@ from deploy.common import ConfigError, print_banner, print_error, script  # noqa
 
 LOG_PATH = common.ROOT / "app.log"
 FIREWALL_HINT = (
-    "第一次啟動若跳出防火牆詢問,請勾選「私人網路」並按「允許存取」。"
+    "其他電腦連不到時:在「設定防火牆.bat」上按右鍵,選「以系統管理員身分執行」。"
     if common.IS_WINDOWS
     else "第一次啟動若詢問是否允許傳入連線,請按「允許」。"
 )
@@ -143,7 +143,8 @@ def run(background: bool) -> int:
         else:
             print_error(f"連接埠 {port} 已被其他程式使用,無法啟動。", [
                 f"用{common.EDITOR}開啟 config.json,把 \"port\": {port} 改成其他數字(例如 8080),存檔後再點兩下{script('啟動')}",
-                "改了連接埠之後,同事要改用新的網址;防火牆也需要允許新的連接埠",
+                "改了連接埠之後,同事要改用新的網址;防火牆也需要允許新的連接埠"
+                + ("(以系統管理員身分重新執行「設定防火牆.bat」)" if common.IS_WINDOWS else ""),
             ])
         return 1
 
