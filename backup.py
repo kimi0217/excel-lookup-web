@@ -9,14 +9,16 @@ import shutil
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from excel_reader import is_excel_file
+
 DATE_FORMAT = "%Y-%m-%d"
 
 
 def backup_excels(data_dir: Path, backup_dir: Path, today: date | None = None) -> Path | None:
-    """把所有 .xlsx 複製到當日備份資料夾;當日已備份過則略過。回傳備份資料夾。"""
+    """把所有 Excel(.xlsx、.xlsm,不分大小寫)複製到當日備份資料夾;當日已備份過則略過。回傳備份資料夾。"""
     today = today or date.today()
     files = [
-        p for p in data_dir.glob("*.xlsx") if p.is_file() and not p.name.startswith("~$")
+        p for p in data_dir.iterdir() if p.is_file() and is_excel_file(p)
     ] if data_dir.is_dir() else []
     if not files:
         return None

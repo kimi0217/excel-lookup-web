@@ -211,6 +211,23 @@ def currency(path: Path) -> None:
     wb.save(path)
 
 
+def macro_workbook(path: Path) -> None:
+    """.xlsm 副檔名的活頁簿(openpyxl 無法產生真正的巨集,只用來測試副檔名支援)。"""
+    wb = Workbook()
+    wb.active.title = "巨集資料"
+    wb.active.append(["項目", "內容"])
+    wb.active.append(["巨集檔", "巨集檔的內容"])
+    wb.save(path)
+
+
+def uppercase_extension(path: Path) -> None:
+    """副檔名為大寫 .XLSX 的檔案。"""
+    wb = Workbook()
+    wb.active.append(["項目", "內容"])
+    wb.active.append(["大寫副檔名", "大寫副檔名的內容"])
+    wb.save(path)
+
+
 CASES = {
     "01_標題列": title_rows,
     "02_合併儲存格": merged_cells,
@@ -225,13 +242,15 @@ CASES = {
     "11_損毀檔": corrupted,
     "12_五萬列大檔": large,
     "13_貨幣格式": currency,
+    "14_巨集檔.xlsm": macro_workbook,
+    "15_大寫副檔名.XLSX": uppercase_extension,
 }
 
 
 def main(out_dir: Path = DEFAULT_OUT) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, build in CASES.items():
-        path = out_dir / f"{name}.xlsx"
+        path = out_dir / (name if Path(name).suffix else f"{name}.xlsx")  # 未指定副檔名時為 .xlsx
         build(path)
         print(f"已產生 {path.name}({path.stat().st_size:,} bytes)")
 
