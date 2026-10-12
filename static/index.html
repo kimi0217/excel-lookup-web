@@ -173,9 +173,11 @@ function highlightPattern(q) {
   }).join("");
 }
 
+// 以空白(含全形空白)拆成多個關鍵字,每個分別標示;較長的關鍵字優先比對
 function makeHighlighter(q) {
-  if (!q) return (text) => escapeHtml(text);
-  const re = new RegExp(highlightPattern(q), "gi");
+  const words = q.split(/\s+/).filter(Boolean).sort((a, b) => b.length - a.length);
+  if (!words.length) return (text) => escapeHtml(text);
+  const re = new RegExp(words.map(highlightPattern).join("|"), "gi");
   return (text) => escapeHtml(text).replace(re, (m) => `<mark>${m}</mark>`);
 }
 
@@ -457,7 +459,7 @@ function renderFile(name, params) {
       <div class="data-bar">
         <div class="field">
           <label for="rowQ">搜尋資料</label>
-          <input id="rowQ" class="input" type="search" placeholder="輸入關鍵字,自動篩選" autocomplete="off">
+          <input id="rowQ" class="input" type="search" placeholder="輸入關鍵字,多個關鍵字用空白分開" autocomplete="off">
         </div>
         <div id="count" class="count"></div>
       </div>

@@ -19,7 +19,7 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import column_index_from_string
 
-from cell_format import display_value, normalize, sort_key
+from cell_format import display_value, normalize, sort_key, split_keywords
 from table_layout import Merge, build_table
 
 logger = logging.getLogger(__name__)
@@ -67,11 +67,12 @@ class Sheet:
         )
         return cls(columns, rows, haystack)
 
-    def match_mask(self, needle: str) -> np.ndarray:
-        """每列是否包含已正規化的關鍵字;關鍵字為空時全部符合。"""
-        if not needle:
-            return np.ones(len(self.rows), dtype=bool)
-        return self.haystack.str.contains(needle, regex=False).to_numpy(dtype=bool)
+    def match_mask(self, keywords: list[str]) -> np.ndarray:
+        """每列是否包含所有已正規化的關鍵字(AND,可分別在不同儲存格);沒有關鍵字時全部符合。"""
+        mask = np.ones(len(self.rows), dtype=bool)
+        for keyword in keywords:
+            mask &= self.haystack.str.contains(keyword, regex=False).to_numpy(dtype=bool)
+        return mask
 
     def sorted_order(self, column: int, descending: bool = False) -> np.ndarray:
         """依某欄排序後的列索引。數字依數值、文字依字串;不論遞增遞減,空白都排在最後。"""
@@ -328,7 +329,7 @@ class Catalog:
         data = sheets[sheet_name]
         if sort is not None and not 0 <= sort < len(data.columns):
             raise SortColumnNotFound(sort)
-        mask = data.match_mask(normalize(query.strip()))
+        mask = data.match_mask(split_keywords(query))
         if sort is None:
             order = np.flatnonzero(mask)
         else:
@@ -353,14 +354,14 @@ class Catalog:
     def search(self, query: str, category: str | None = None, max_results: int = 500) -> dict:
         """在指定分類(或全部分類)中搜尋包含關鍵字的列。
 
-        不分大小寫、/ 與 - 視為相同、忽略數字間的千分位逗號。
+        以空白拆成多個關鍵字,每個都要出現在同一列;不分大小寫、/ 與 - 視為相同、忽略數字間的千分位逗號。
         讀不了的檔案列在 errors,尚未載入完成的檔案列在 loading,都不影響其他檔案。
         """
-        needle = normalize(query.strip())
+        keywords = split_keywords(query)
         results: list[dict] = []
         errors: list[dict] = []
         loading: list[str] = []
-        if not needle:
+        if not keywords:
             return {"results": results, "errors": errors, "loading": loading}
         remaining = max_results
         for cat in [category] if category else list_categories(self.data_dir):
@@ -376,7 +377,7 @@ class Catalog:
                     break
                 if not sheet.rows:
                     continue
-                indexes = np.flatnonzero(sheet.match_mask(needle))[:remaining]
+                indexes = np.flatnonzero(sheet.match_mask(keywords))[:remaining]
                 if len(indexes) == 0:
                     continue
                 remaining -= len(indexes)

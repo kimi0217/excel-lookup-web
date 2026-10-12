@@ -168,6 +168,11 @@ def display_value(value: object, number_format: str | None = None) -> str:
     return str(value)
 
 
+def split_keywords(query: str) -> list[str]:
+    """把搜尋字串以空白(含全形空白)拆成多個關鍵字,並各自正規化;空字串回傳空清單。"""
+    return [normalize(word) for word in query.split()]  # str.split() 會把全形空白也當成空白
+
+
 def normalize(text: str) -> str:
     """搜尋用正規化:不分大小寫、/ 與 - 視為相同、忽略數字間的千分位逗號。"""
     return _DIGIT_COMMA.sub("", text.casefold().replace("/", "-"))
