@@ -5,9 +5,14 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from fractions import Fraction
 
 # 數字部分支援:0、00000、0.00、#,##0、#,##0.00、0%、0.0%、0.## 等
 _NUMERIC_FMT = re.compile(r"^(?P<int>[#0,]*0)(?:\.(?P<dec>0*#*))?(?P<pct>%?)$")
+# 分數:# ?/?、# ??/??、?/?(假分數)、# ?/4(固定分母)
+_FRACTION_FMT = re.compile(r"^(?:(?P<int>[#0?,]+)\s+)?(?P<num>[#0?]+)\s*/\s*(?P<den>[#0?]+|\d+)$")
+# 科學記號:0.00E+00、0.0E+0、##0.0E+0(工程記號)、0.00E-00
+_SCIENTIFIC_FMT = re.compile(r"^(?P<int>[#0?,]*[#0?])(?:\.(?P<dec>[#0?]*))?(?P<e>[Ee])(?P<sign>[+-])(?P<exp>[#0?]+)$")
 _CORE_CHARS = set("0#?.,%")
 _DIGIT_COMMA = re.compile(r"(?<=\d),(?=\d)")
 
@@ -55,7 +60,7 @@ def _parse_section(section: str) -> tuple[str, str | None, str] | None:
     """拆成 (前綴文字, 數字部分, 後綴文字)。
 
     數字部分為 "General" 表示一般格式、None 表示只有文字(例如會計格式的零顯示為 -)。
-    無法處理的格式(分數、科學記號、數字中間夾文字)回傳 None。
+    無法處理的格式(數字中間夾文字)回傳 None。
     """
     tokens: list[tuple[str, str]] = []  # (種類, 內容),種類為 lit / core / general
     i = 0
@@ -86,27 +91,114 @@ def _parse_section(section: str) -> tuple[str, str | None, str] | None:
             tokens.append(("general", ""))
             i += 7 if ch != "@" else 1
             continue
-        if ch in "Ee" and section[i + 1 : i + 2] in ("+", "-"):
-            return None  # 科學記號
+        if ch in "Ee" and section[i + 1 : i + 2] in ("+", "-"):  # 科學記號
+            tokens.append(("core", section[i : i + 2]))
+            i += 2
+            continue
+        if ch == "/":  # 分數;固定分母(# ?/4)的數字也屬於數字部分
+            end = i + 1
+            while end < len(section) and section[end].isdigit():
+                end += 1
+            tokens.append(("core", section[i:end]))
+            i = end
+            continue
         tokens.append(("core" if ch in _CORE_CHARS else "lit", ch))
         i += 1
     numeric = [n for n, (kind, _) in enumerate(tokens) if kind != "lit"]
     if not numeric:
         return "".join(text for _, text in tokens), None, ""
     first, last = numeric[0], numeric[-1]
-    if any(kind == "lit" for kind, _ in tokens[first : last + 1]):
+    inner = tokens[first : last + 1]
+    is_fraction = any(kind == "core" and text.startswith("/") for kind, text in inner)
+    # 數字中間夾文字無法處理;只有分數的整數與分子之間可以有空白(# ?/?)
+    if any(kind == "lit" and not (is_fraction and text.isspace()) for kind, text in inner):
         return None
-    kinds = {kind for kind, _ in tokens[first : last + 1]}
-    core = "General" if "general" in kinds else "".join(text for _, text in tokens[first : last + 1])
-    if "?" in core or (len(kinds) > 1):
+    kinds = {kind for kind, _ in inner if kind != "lit"}
+    core = "General" if "general" in kinds else "".join(text for _, text in inner)
+    if len(kinds) > 1:
         return None
     prefix = "".join(text for _, text in tokens[:first])
     suffix = "".join(text for _, text in tokens[last + 1 :])
     return prefix, core, suffix
 
 
+def _trim_optional(text: str, dec: str) -> str:
+    """小數點後的 #、? 代表可省略的 0(? 在 Excel 中補空白,網頁上一併省略)。"""
+    optional = len(dec) - len(dec.rstrip("#?"))
+    if not optional:
+        return text
+    whole, _, frac = text.partition(".")
+    frac = frac[: len(frac) - optional] + frac[len(frac) - optional :].rstrip("0")
+    return f"{whole}.{frac}" if frac else whole
+
+
+def _format_fraction(number: Decimal, core: str) -> str | None:
+    """分數,例如 # ?/? 的 1.5 顯示為 1 1/2;沒有整數部分(?/?)時顯示假分數 3/2。
+
+    分母為 ? 時取分母位數內最接近的分數(與 Excel 相同);分母為數字時固定分母、不約分。
+    Excel 用空白對齊的部分省略。
+    """
+    match = _FRACTION_FMT.match(core)
+    if not match:
+        return None
+    value = Fraction(abs(number))
+    whole = 0
+    if match["int"] is not None:
+        whole = int(value)
+        value -= whole
+    den = match["den"]
+    if den.isdigit():
+        denominator = int(den)
+        if denominator == 0:
+            return None
+        numerator = int(value * denominator + Fraction(1, 2))  # 四捨五入
+    else:
+        approx = value.limit_denominator(10 ** len(den) - 1)
+        numerator, denominator = approx.numerator, approx.denominator
+    if match["int"] is not None and numerator >= denominator:  # 進位成整數
+        whole += numerator // denominator
+        numerator %= denominator
+    parts = []
+    if whole:
+        parts.append(f"{whole:,}" if "," in match["int"] else str(whole))
+    if numerator:
+        parts.append(f"{numerator}/{denominator}")
+    return " ".join(parts) or "0"
+
+
+def _format_scientific(number: Decimal, core: str) -> str | None:
+    """科學記號,例如 0.00E+00 的 12345 顯示為 1.23E+04;##0.0E+0 為工程記號(指數為 3 的倍數)。"""
+    match = _SCIENTIFIC_FMT.match(core)
+    if not match:
+        return None
+    int_part = match["int"].replace(",", "")
+    dec = match["dec"] or ""
+    zeros = max(int_part.count("0"), 1)
+    # 整數部分超過 1 位且含 #(或 ?)時,指數為整數位數的倍數(工程記號);否則整數部分剛好 zeros 位
+    step = len(int_part) if len(int_part) > 1 and int_part.strip("0") else 1
+    value = abs(number)
+    exponent = 0
+    if value:
+        exponent = (value.adjusted() // step) * step if step > 1 else value.adjusted() - (zeros - 1)
+    quantum = Decimal(1).scaleb(-len(dec))
+    mantissa = value.scaleb(-exponent).quantize(quantum, rounding=ROUND_HALF_UP)
+    if value and mantissa >= Decimal(10) ** (step if step > 1 else zeros):  # 四捨五入後進位(9.999 → 10.00)
+        exponent += step
+        mantissa = value.scaleb(-exponent).quantize(quantum, rounding=ROUND_HALF_UP)
+    whole, dot, frac = _trim_optional(f"{mantissa:.{len(dec)}f}", dec).partition(".")
+    text = whole.zfill(zeros if step == 1 else 1) + dot + frac
+    sign = "-" if exponent < 0 else ("+" if match["sign"] == "+" else "")
+    digits = max(match["exp"].count("0"), 1)
+    return f"{text}{match['e']}{sign}{abs(exponent):0{digits}d}"
+
+
 def _format_core(number: Decimal, core: str) -> str | None:
     """依數字部分格式化絕對值;格式不支援時回傳 None。"""
+    if "/" in core:
+        return _format_fraction(number, core)
+    if "E" in core.upper():
+        return _format_scientific(number, core)
+    core = core.replace("?", "#")  # ? 與 # 相同,只是 Excel 會補空白對齊
     match = _NUMERIC_FMT.match(core)
     if not match:
         return None
@@ -115,11 +207,7 @@ def _format_core(number: Decimal, core: str) -> str | None:
     number = number.quantize(Decimal(1).scaleb(-len(dec)), rounding=ROUND_HALF_UP)
     comma = "," if "," in int_part else ""
     text = f"{number:{comma}.{len(dec)}f}"
-    optional = len(dec) - len(dec.rstrip("#"))  # 小數點後的 # 代表可省略的 0
-    if optional:
-        whole, _, frac = text.partition(".")
-        frac = frac[: len(frac) - optional] + frac[len(frac) - optional :].rstrip("0")
-        text = f"{whole}.{frac}" if frac else whole
+    text = _trim_optional(text, dec)
     min_digits = int_part.count("0")
     if min_digits > 1 and not comma:
         whole, dot, frac = text.partition(".")
@@ -130,7 +218,7 @@ def _format_core(number: Decimal, core: str) -> str | None:
 def format_number(value: int | float, number_format: str | None) -> str:
     """依數字格式還原顯示,例如格式 00000 的 123 顯示為 00123、"NT$"#,##0 的 1000 顯示為 NT$1,000。
 
-    支援常見的數字、百分比、貨幣格式與正負零分段;無法處理的格式以一般格式顯示。
+    支援常見的數字、百分比、貨幣、分數、科學記號格式與正負零分段;無法處理的格式以一般格式顯示。
     """
     sections = _split_sections(number_format or "General")
     if value < 0 and len(sections) >= 2:
