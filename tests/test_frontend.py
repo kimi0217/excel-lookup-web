@@ -55,3 +55,18 @@ def test_short_time_today_and_other_day():
     const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
     process.stdout.write(shortTime(`${today} 09:05`) + "|" + shortTime("2020-03-04 21:34"));"""
     assert run_js(code) == "09:05|03-04 21:34"
+
+
+@pytest.mark.parametrize(
+    ("query", "text", "expected"),
+    [
+        ("amp", "A&B amp", "A&amp;B <mark>amp</mark>"),  # 不可標到 &amp; 的內部
+        ("lt", "a<b", "a&lt;b"),
+        ("quot", '"x"', "&quot;x&quot;"),
+        ("&", "A&B", "A<mark>&amp;</mark>B"),  # 搜尋特殊字元本身
+        ("<b>", "x<b>y", "x<mark>&lt;b&gt;</mark>y"),
+        ("a&b", "A&B", "<mark>A&amp;B</mark>"),
+    ],
+)
+def test_highlight_matches_raw_text_before_escaping(query, text, expected):
+    assert highlight(query, text) == expected

@@ -170,21 +170,32 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-// 與後端搜尋規則一致:不分大小寫、/ 與 - 視為相同、數字間可有千分位逗號
+// 與後端搜尋規則一致:不分大小寫、/ 與 - 視為相同、數字間可有千分位逗號(比對原始文字,不是跳脫後的 HTML)
 function highlightPattern(q) {
-  const chars = [...escapeHtml(q)];
+  const chars = [...q];
   return chars.map((c, i) => {
     const part = c === "/" || c === "-" ? "[/-]" : c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return /\d/.test(c) && /\d/.test(chars[i + 1] || "") ? part + ",?" : part;
   }).join("");
 }
 
-// 以空白(含全形空白)拆成多個關鍵字,每個分別標示;較長的關鍵字優先比對
+// 以空白(含全形空白)拆成多個關鍵字,每個分別標示;較長的關鍵字優先比對。
+// 先在原始文字上找出符合的位置,再分段跳脫 HTML,避免搜尋 amp、lt 時標到 &amp;、&lt; 的內部
 function makeHighlighter(q) {
   const words = q.split(/\s+/).filter(Boolean).sort((a, b) => b.length - a.length);
   if (!words.length) return (text) => escapeHtml(text);
   const re = new RegExp(words.map(highlightPattern).join("|"), "gi");
-  return (text) => escapeHtml(text).replace(re, (m) => `<mark>${m}</mark>`);
+  return (text) => {
+    const raw = String(text);
+    let html = "";
+    let last = 0;
+    for (const m of raw.matchAll(re)) {
+      if (!m[0]) continue;
+      html += escapeHtml(raw.slice(last, m.index)) + `<mark>${escapeHtml(m[0])}</mark>`;
+      last = m.index + m[0].length;
+    }
+    return html + escapeHtml(raw.slice(last));
+  };
 }
 
 function fmtNumber(n) { return Number(n).toLocaleString("zh-TW"); }
