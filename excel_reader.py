@@ -13,6 +13,7 @@ import stat as stat_module
 import threading
 import time
 import zipfile
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -88,7 +89,9 @@ class Sheet:
         return np.concatenate([filled[::-1] if descending else filled, blank])
 
 
-EXCEL_SUFFIXES = (".xlsx", ".xlsm")  # 副檔名不分大小寫;子資料夾不讀取
+EXCEL_SUFFIXES = (".xlsx", ".xlsm")  # 副檔名不分大小寫
+SKIP_FOLDER_PREFIXES = (".", "~")  # 略過的子資料夾(.git、~暫存 等)
+_BACKUP_FOLDER = re.compile(r"^\d{4}-\d{2}-\d{2}$")  # 每日備份資料夾的名稱
 
 
 def is_excel_file(path: Path) -> bool:
@@ -101,28 +104,84 @@ class FileStat:
     path: Path
     mtime: float
     size: int
+    relative: str  # 相對於 data_dir 的路徑(含副檔名,以 / 分隔),例如「醫材/耗材清單.xlsx」
 
 
-def scan_folder(data_dir: Path) -> dict[str, FileStat]:
-    """列出資料夾中的 Excel(分類名稱 → 路徑、修改時間、大小),依名稱排序。
+def _excluded_dirs(data_dir: Path, exclude: list[Path]) -> tuple[set[Path], bool]:
+    """回傳 (位於 data_dir 底下、要略過的資料夾, 是否略過最上層的日期資料夾)。
 
-    資料夾不存在或無法存取(例如網路共用資料夾斷線)時拋出 OSError。
+    exclude 通常是備份資料夾:備份放在 data_dir 底下時不可當成資料讀取。
+    與 data_dir 相同時,略過最上層名稱為日期(YYYY-MM-DD)的資料夾。
+    """
+    skipped, dated = set(), False
+    try:
+        base = data_dir.resolve()
+    except OSError:
+        return skipped, dated
+    for folder in exclude:
+        try:
+            relative = folder.resolve().relative_to(base)
+        except (OSError, ValueError):  # 不在 data_dir 底下
+            continue
+        if relative.parts:
+            skipped.add(data_dir.joinpath(*relative.parts))
+        else:
+            dated = True
+    return skipped, dated
+
+
+def find_excel_files(data_dir: Path, include_subfolders: bool = True, exclude: list[Path] | None = None) -> list[FileStat]:
+    """列出資料夾(預設含子資料夾)中的 Excel。
+
+    略過名稱以 . 或 ~ 開頭的子資料夾,以及 exclude 中的資料夾(例如位於 data_dir 底下的備份資料夾)。
+    data_dir 不存在或無法存取(例如網路共用資料夾斷線)時拋出 OSError;沒有權限的子資料夾略過。
     """
     if not data_dir.is_dir():
         raise FileNotFoundError(f"找不到資料夾:{data_dir}")
+    skipped, skip_dated = _excluded_dirs(data_dir, exclude or [])
     found: list[FileStat] = []
-    for path in data_dir.iterdir():
-        if not is_excel_file(path):
-            continue
+    pending = [(data_dir, ())]
+    while pending:
+        folder, parts = pending.pop()
         try:
-            info = path.stat()
-        except OSError:  # 列出後被刪除或改名,下次再處理
+            entries = list(folder.iterdir())
+        except PermissionError as exc:
+            if not parts:
+                raise
+            logger.warning("無權讀取子資料夾,已略過:%s(%s)", folder, exc)
             continue
-        if stat_module.S_ISREG(info.st_mode):
-            found.append(FileStat(path, info.st_mtime, info.st_size))
-    # 分類名稱為檔名去掉副檔名;同名不同副檔名(報表.xlsx 與 報表.xlsm)時改用完整檔名區分
-    stems = [f.path.stem for f in found]
-    files = {(f.path.stem if stems.count(f.path.stem) == 1 else f.path.name): f for f in found}
+        for path in entries:
+            try:
+                info = path.stat()
+            except OSError:  # 列出後被刪除或改名,下次再處理
+                continue
+            if stat_module.S_ISDIR(info.st_mode):
+                if (
+                    include_subfolders
+                    and not path.name.startswith(SKIP_FOLDER_PREFIXES)
+                    and path not in skipped
+                    and not (skip_dated and not parts and _BACKUP_FOLDER.match(path.name))
+                    and not path.is_symlink()  # 避免連結形成迴圈
+                ):
+                    pending.append((path, (*parts, path.name)))
+            elif stat_module.S_ISREG(info.st_mode) and is_excel_file(path):
+                found.append(FileStat(path, info.st_mtime, info.st_size, "/".join((*parts, path.name))))
+    return found
+
+
+def scan_folder(
+    data_dir: Path, include_subfolders: bool = True, exclude: list[Path] | None = None
+) -> dict[str, FileStat]:
+    """列出資料夾中的 Excel(分類名稱 → 路徑、修改時間、大小),依名稱排序。
+
+    分類名稱為相對路徑去掉副檔名,例如「醫材/耗材清單」;同一資料夾中同名不同副檔名
+    (報表.xlsx 與 報表.xlsm)時改用完整檔名區分。
+    資料夾不存在或無法存取(例如網路共用資料夾斷線)時拋出 OSError。
+    """
+    found = find_excel_files(data_dir, include_subfolders, exclude)
+    stems = [f.relative.rsplit(".", 1)[0] for f in found]
+    counts = Counter(stems)
+    files = {(stem if counts[stem] == 1 else f.relative): f for f, stem in zip(found, stems)}
     return dict(sorted(files.items()))
 
 
@@ -350,7 +409,7 @@ class _Entry:
 
 
 class Catalog:
-    """資料夾中所有 Excel 的讀取結果。
+    """資料夾(含子資料夾)中所有 Excel 的讀取結果。
 
     refresh() 由背景執行緒定期呼叫,讀取新增或變動的檔案;搜尋只使用已載入的資料,
     不會在搜尋時讀檔。檔案變動後重新載入完成前,搜尋仍使用舊資料。
@@ -358,10 +417,19 @@ class Catalog:
     資料夾暫時無法連線時保留已載入的資料,恢復後自動更新。
     """
 
-    def __init__(self, data_dir: Path, include_hidden: bool = False, include_hidden_rows_columns: bool = False) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        include_hidden: bool = False,
+        include_hidden_rows_columns: bool = False,
+        include_subfolders: bool = True,
+        exclude: list[Path] | None = None,
+    ) -> None:
         self.data_dir = data_dir
         self.include_hidden = include_hidden
         self.include_hidden_rows_columns = include_hidden_rows_columns
+        self.include_subfolders = include_subfolders
+        self.exclude = exclude or []  # 不讀取的資料夾(位於 data_dir 底下的備份資料夾)
         self._entries: dict[str, _Entry] = {}
         self._files: dict[str, FileStat] = {}  # 最後一次成功列出的檔案
         self._refresh_lock = threading.Lock()
@@ -369,10 +437,13 @@ class Catalog:
         self.last_success: float | None = None  # 最後一次成功讀取資料夾的時間
         self._offline_logged = False
         try:
-            self._files = scan_folder(data_dir)  # 先列出檔名,載入完成前就能顯示「載入中」
+            self._files = self._scan()  # 先列出檔名,載入完成前就能顯示「載入中」
             self.folder_ok = True
         except OSError:
             pass
+
+    def _scan(self) -> dict[str, FileStat]:
+        return scan_folder(self.data_dir, self.include_subfolders, self.exclude)
 
     def has(self, name: str) -> bool:
         return name in self._files
@@ -390,7 +461,7 @@ class Catalog:
         """
         with self._refresh_lock:
             try:
-                files = scan_folder(self.data_dir)
+                files = self._scan()
             except OSError as exc:
                 self.folder_ok = False
                 if not self._offline_logged:
@@ -419,10 +490,10 @@ class Catalog:
                 except ExcelReadError as exc:
                     self._entries[name] = _Entry(key, {}, str(exc))
                     if previous is None or previous.error != str(exc):
-                        logger.warning("無法讀取 %s:%s", path.name, exc)
+                        logger.warning("無法讀取 %s:%s", files[name].relative, exc)
                 else:
                     if previous is not None and previous.error:
-                        logger.info("已可讀取 %s", path.name)
+                        logger.info("已可讀取 %s", files[name].relative)
             self.last_success = time.time()
 
     def _summary(self, name: str) -> dict:

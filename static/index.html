@@ -69,6 +69,9 @@
   /* 首頁 */
   .toolbar { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; margin-bottom: 16px; }
   .summary { margin: 0 0 12px; color: var(--muted); font-size: 0.95rem; }
+  .folder { margin-bottom: 22px; }
+  .folder-name { font-size: 1rem; font-weight: 600; margin: 0 0 8px; color: var(--fg); word-break: break-all; }
+  .folder-name .muted { font-weight: normal; font-size: 0.9rem; }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
   .card {
     display: block; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
@@ -279,8 +282,8 @@ function renderHome() {
   app.innerHTML = `
     <section class="toolbar">
       <div class="field">
-        <label for="fileFilter">搜尋檔名</label>
-        <input id="fileFilter" class="input" type="search" placeholder="輸入檔名關鍵字,立即篩選" autocomplete="off">
+        <label for="fileFilter">搜尋檔名或資料夾</label>
+        <input id="fileFilter" class="input" type="search" placeholder="輸入檔名或資料夾名稱,立即篩選" autocomplete="off">
       </div>
       <form id="allSearch" class="field">
         <label for="allQ">搜尋全部檔案的內容</label>
@@ -292,7 +295,7 @@ function renderHome() {
     </section>
     <div id="homeNotice"></div>
     <p id="summary" class="summary">載入中…</p>
-    <div id="fileList" class="cards"></div>`;
+    <div id="fileList"></div>`;
   let cats = [];
   const filter = document.getElementById("fileFilter");
   filter.addEventListener("input", () => drawCards(cats, filter.value));
@@ -324,41 +327,69 @@ function renderHome() {
   load();
 }
 
+// 分類名稱「醫材/耗材清單」→ 資料夾「醫材」;依資料夾分組,最上層的檔案排第一組。
+// 篩選比對完整名稱(含資料夾),所以輸入資料夾名稱也找得到
+function groupByFolder(cats, filterText) {
+  const f = filterText.trim().toLowerCase();
+  const groups = new Map();
+  for (const c of cats) {
+    if (f && !c.name.toLowerCase().includes(f)) continue;
+    const cut = c.name.lastIndexOf("/");
+    const folder = cut >= 0 ? c.name.slice(0, cut) : "";
+    if (!groups.has(folder)) groups.set(folder, []);
+    groups.get(folder).push(c);
+  }
+  return [...groups.keys()].sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a < b ? -1 : a > b ? 1 : 0))
+    .map((folder) => ({ folder, files: groups.get(folder) }));
+}
+
 function drawCards(cats, filterText) {
   const list = document.getElementById("fileList");
   const summary = document.getElementById("summary");
   if (!list) return;
-  const f = filterText.trim().toLowerCase();
-  const shown = f ? cats.filter((c) => c.name.toLowerCase().includes(f)) : cats;
+  const f = filterText.trim();
+  const groups = groupByFolder(cats, filterText);
+  const shownCount = groups.reduce((n, g) => n + g.files.length, 0);
   if (cats.length === 0) {
     summary.textContent = "";
     list.innerHTML = `<div class="empty">資料夾中沒有任何 Excel 檔案</div>`;
     return;
   }
-  summary.textContent = f ? `共 ${cats.length} 個檔案,符合 ${shown.length} 個` : `共 ${cats.length} 個檔案`;
-  if (shown.length === 0) {
-    list.innerHTML = `<div class="empty">沒有檔名包含「${escapeHtml(filterText.trim())}」的檔案</div>`;
+  summary.textContent = f ? `共 ${cats.length} 個檔案,符合 ${shownCount} 個` : `共 ${cats.length} 個檔案`;
+  if (shownCount === 0) {
+    list.innerHTML = `<div class="empty">沒有檔名或資料夾名稱包含「${escapeHtml(f)}」的檔案</div>`;
     return;
   }
-  const hl = makeHighlighter(filterText.trim());
-  list.innerHTML = shown.map((c) => {
+  const hl = makeHighlighter(f);
+  const card = (c) => {
+    const label = hl(c.name.slice(c.name.lastIndexOf("/") + 1));  // 資料夾名稱顯示在分組標題
     const updated = c.updated ? `更新:${escapeHtml(c.updated)}` : "";
     if (c.status === "error") {
       return `<div class="card card-error" aria-disabled="true" title="${escapeHtml(c.error)}">
-        <div class="card-name">${hl(c.name)}</div>
+        <div class="card-name">${label}</div>
         <div class="card-reason">⚠ ${escapeHtml(c.error)}</div>
         <div class="card-meta">${updated}</div></div>`;
     }
     if (c.status === "loading") {
       return `<a class="card" href="${fileHash(c.name)}">
-        <div class="card-name">${hl(c.name)}<span class="badge">載入中</span></div>
+        <div class="card-name">${label}<span class="badge">載入中</span></div>
         <div class="card-meta">${updated}</div></a>`;
     }
     return `<a class="card" href="${fileHash(c.name)}">
-      <div class="card-name">${hl(c.name)}</div>
+      <div class="card-name">${label}</div>
       <div class="card-meta">${fmtNumber(c.rows)} 筆 · ${c.sheets} 個工作表</div>
       <div class="card-meta">${updated}</div></a>`;
-  }).join("");
+  };
+  // 沒有子資料夾時不顯示分組標題
+  if (groups.length === 1 && groups[0].folder === "" && !cats.some((c) => c.name.includes("/"))) {
+    list.innerHTML = `<div class="cards">${groups[0].files.map(card).join("")}</div>`;
+    return;
+  }
+  list.innerHTML = groups.map((g) => `
+    <section class="folder">
+      <h2 class="folder-name">📁 ${g.folder ? hl(g.folder) : "最上層"} <span class="muted">(${g.files.length} 個檔案)</span></h2>
+      <div class="cards">${g.files.map(card).join("")}</div>
+    </section>`).join("");
 }
 
 // ---------- 搜尋全部檔案 ----------

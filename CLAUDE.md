@@ -1,6 +1,6 @@
 # excel-lookup-web
 
-內網唯讀查詢網頁:讀取資料夾中的 Excel,每個檔案(.xlsx、.xlsm,副檔名不分大小寫)= 一個分類,提供搜尋。
+內網唯讀查詢網頁:讀取資料夾(含子資料夾)中的 Excel,每個檔案(.xlsx、.xlsm,副檔名不分大小寫)= 一個分類,提供搜尋。
 
 ## 原則
 - 唯讀:程式絕不寫入或修改原始 Excel
@@ -24,7 +24,7 @@
 - `excel_reader.py`:安全讀檔(暫存複本)、讀取失敗原因判斷、`Catalog`(預先載入與搜尋)
 - `table_layout.py`:表頭偵測、合併儲存格填值、欄位名稱整理(純邏輯,不碰檔案)
 - `cell_format.py`:儲存格值 → 顯示文字(日期、數字格式、貨幣),搜尋用正規化
-- `backup.py`:每日備份到 backups/YYYY-MM-DD/,保留 backup_keep_days 天
+- `backup.py`:每日備份到 backups/YYYY-MM-DD/(保留子資料夾結構),保留 backup_keep_days 天
 - `deploy/`:給不懂程式的使用者的部署腳本,由根目錄的 `.bat`(Windows)/`.command`(macOS)呼叫
   - `common.py`:共用(內網 IP、連接埠檢查、資料夾選擇、config.json 產生);安裝前就會執行,只能用標準函式庫
   - `install.py`:建立 venv、安裝套件,依 pip 輸出判斷失敗原因
@@ -33,9 +33,10 @@
 
 ## API 與前端
 - `GET /api/categories`:檔案清單(狀態、筆數、工作表數、檔案修改時間)
-- `GET /api/files/{name}`:單一檔案摘要與工作表清單
+- `GET /api/files/{name}`:單一檔案摘要與工作表清單(name 可含 /,路由用 `{name:path}`,`/rows` 路由先宣告;子資料夾中名為 rows 的檔案由 rows 路由轉給 file_info)
 - `GET /api/files/{name}/rows?sheet=&q=&sort=&order=&page=&page_size=`:工作表分頁資料(預設每頁 100,上限 500);篩選、排序、分頁都在伺服器端,不可一次送出整份大檔。排序:數字(含貨幣、千分位)依數值,空白永遠排最後;各欄排序結果快取在 Sheet._sort_cache
 - `GET /api/search?q=`:跨所有檔案搜尋(最多 500 筆)
+- 首頁依資料夾分組(static/index.html 的 groupByFolder),檔名篩選比對含資料夾的完整名稱
 - 前端以 hash 路由:`#/` 檔案列表、`#/file/<檔名>?sheet=&q=&sort=&order=&page=` 資料檢視、`#/search?q=` 跨檔搜尋。檔案內的搜尋、排序、換頁用 history.replaceState 更新網址(不新增瀏覽紀錄),上一頁回到檔案列表
 
 ## 部署腳本的規則
@@ -48,7 +49,8 @@
 - **讀檔用 openpyxl 唯讀模式,不用 pandas.read_excel**:需要每個儲存格的數字格式(還原開頭 0、貨幣、千分位)與工作表可見狀態,pandas 拿不到。pandas 只用於搜尋(Series.str.contains)。
 - **公式讀 Excel 存下的計算結果**(data_only=True):沒經過 Excel 存檔的檔案(例如程式產生的)公式欄會是空白。
 - **預先載入**:啟動時與每 reload_interval_seconds 秒檢查檔案修改時間與大小,在背景只重讀有變動的檔案(小檔優先)。搜尋絕不讀檔;檔案重新載入完成前沿用舊資料;從未載入過的檔案回報為 loading。
-- **檔案類型**:只讀 data_dir 這一層的 .xlsx、.xlsm(副檔名不分大小寫,excel_reader.is_excel_file),不讀子資料夾;同名不同副檔名時分類名稱用完整檔名。備份使用相同規則。
+- **檔案類型**:讀 data_dir 中的 .xlsx、.xlsm(副檔名不分大小寫,excel_reader.is_excel_file);include_subfolders(預設 true)時遞迴讀取子資料夾(excel_reader.find_excel_files),略過 . 與 ~ 開頭的資料夾、符號連結的資料夾與沒有權限的子資料夾。分類名稱為相對路徑去掉副檔名(「醫材/耗材清單」);同一資料夾中同名不同副檔名時用完整檔名。備份使用相同規則並保留資料夾結構。
+- **備份資料夾在 data_dir 底下**:Catalog 與備份都以 exclude=[backup_dir] 排除,絕不可把備份當成資料;backup_dir 就是 data_dir 時略過最上層的日期資料夾。
 - **壞檔隔離**:任何讀取失敗只影響該檔,回報簡短中文原因(密碼保護、舊版 .xls、損毀、無法存取),不可讓「全部分類」搜尋失敗。讀取失敗的檔案每次 refresh 都重讀(同樣的錯誤只記錄一次)。
 - **資料夾斷線**:scan_folder 失敗時保留已載入的資料,/api/categories 的 folder 回報 ok 與 last_success;請求一律只用背景 refresh 快取的檔案清單,不存取資料夾(網路斷線時存取可能卡住數秒)。
 - **隱藏工作表預設不讀**:隱藏與極度隱藏的工作表在 include_hidden_sheets 為 false(預設)時完全不讀取,避免使用者刻意隱藏的資料被搜尋到。

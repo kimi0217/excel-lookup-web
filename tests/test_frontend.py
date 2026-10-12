@@ -70,3 +70,31 @@ def test_short_time_today_and_other_day():
 )
 def test_highlight_matches_raw_text_before_escaping(query, text, expected):
     assert highlight(query, text) == expected
+
+
+def group_by_folder(names: list[str], filter_text: str = "") -> list:
+    start = SCRIPT.index("function groupByFolder")
+    code = SCRIPT[start : SCRIPT.index("\n}\n", start) + 3] + (
+        f"\nprocess.stdout.write(JSON.stringify(groupByFolder({json.dumps([{'name': n} for n in names])}, "
+        f"{json.dumps(filter_text)}).map((g) => [g.folder, g.files.map((c) => c.name)])));"
+    )
+    return json.loads(run_js(code))
+
+
+def test_group_by_folder_root_first():
+    names = ["總表", "醫材/儀器/保養紀錄", "醫材/耗材清單", "A/b"]
+    assert group_by_folder(names) == [
+        ["", ["總表"]],
+        ["A", ["A/b"]],
+        ["醫材", ["醫材/耗材清單"]],
+        ["醫材/儀器", ["醫材/儀器/保養紀錄"]],
+    ]
+
+
+def test_group_filter_matches_folder_name():
+    names = ["總表", "醫材/耗材清單", "醫材/儀器/保養紀錄", "藥品/清單"]
+    assert group_by_folder(names, "醫材") == [
+        ["醫材", ["醫材/耗材清單"]],
+        ["醫材/儀器", ["醫材/儀器/保養紀錄"]],
+    ]
+    assert group_by_folder(names, "清單") == [["藥品", ["藥品/清單"]], ["醫材", ["醫材/耗材清單"]]]  # 依字碼排序,與後端相同

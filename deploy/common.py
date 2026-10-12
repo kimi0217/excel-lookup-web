@@ -166,14 +166,28 @@ def write_config(data_dir: str, existing: dict | None = None, path: Path | None 
 
 
 def count_xlsx(folder: Path) -> int:
-    """資料夾中的 Excel 檔數(.xlsx、.xlsm,不分大小寫;規則同 excel_reader.is_excel_file)。"""
-    try:
-        return sum(
-            1 for p in folder.iterdir()
-            if p.suffix.lower() in (".xlsx", ".xlsm") and not p.name.startswith("~$") and p.is_file()
-        )
-    except OSError:
-        return 0
+    """資料夾(含子資料夾)中的 Excel 檔數。
+
+    規則同 excel_reader.find_excel_files:.xlsx、.xlsm 不分大小寫,略過 ~$ 鎖定檔與 . 或 ~ 開頭的子資料夾。
+    """
+    count = 0
+    pending = [folder]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            try:
+                if p.is_dir():
+                    if not p.name.startswith((".", "~")) and not p.is_symlink():
+                        pending.append(p)
+                elif p.suffix.lower() in (".xlsx", ".xlsm") and not p.name.startswith("~$") and p.is_file():
+                    count += 1
+            except OSError:
+                continue
+    return count
 
 
 def to_unc(path: str) -> str:
