@@ -67,9 +67,9 @@ def check_data_dir(config: dict, background: bool) -> dict:
     if data_dir.is_dir():
         if common.count_xlsx(data_dir) == 0:
             if background:
-                logger.warning("Excel 資料夾中目前沒有 .xlsx 檔案:%s", data_dir)
+                logger.warning("Excel 資料夾中目前沒有 Excel 檔案(.xlsx、.xlsm):%s", data_dir)
             else:
-                print(f"注意:Excel 資料夾中目前沒有 .xlsx 檔案:{data_dir}")
+                print(f"注意:Excel 資料夾中目前沒有 Excel 檔案(.xlsx、.xlsm):{data_dir}")
                 print("      放入檔案後幾秒內會自動出現在網頁上。\n")
         return config
     if background:

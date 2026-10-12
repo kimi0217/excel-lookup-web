@@ -166,8 +166,12 @@ def write_config(data_dir: str, existing: dict | None = None, path: Path | None 
 
 
 def count_xlsx(folder: Path) -> int:
+    """資料夾中的 Excel 檔數(.xlsx、.xlsm,不分大小寫;規則同 excel_reader.is_excel_file)。"""
     try:
-        return sum(1 for p in folder.glob("*.xlsx") if not p.name.startswith("~$"))
+        return sum(
+            1 for p in folder.iterdir()
+            if p.suffix.lower() in (".xlsx", ".xlsm") and not p.name.startswith("~$") and p.is_file()
+        )
     except OSError:
         return 0
 
@@ -245,7 +249,7 @@ def choose_data_dir() -> str | None:
             continue
         count = count_xlsx(path)
         if count == 0:
-            print(f"注意:資料夾「{folder}」中沒有任何 .xlsx 檔案。")
+            print(f"注意:資料夾「{folder}」中沒有任何 Excel 檔案(.xlsx、.xlsm)。")
             if not ask_yes("仍要使用這個資料夾嗎?"):
                 continue
         else:

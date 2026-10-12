@@ -87,6 +87,14 @@ class Sheet:
         return np.concatenate([filled[::-1] if descending else filled, blank])
 
 
+EXCEL_SUFFIXES = (".xlsx", ".xlsm")  # 副檔名不分大小寫;子資料夾不讀取
+
+
+def is_excel_file(path: Path) -> bool:
+    """是否為要讀取的 Excel 檔(.xlsx、.xlsm,不分大小寫),排除 Excel 開啟中的鎖定檔 ~$*。"""
+    return path.suffix.lower() in EXCEL_SUFFIXES and not path.name.startswith("~$")
+
+
 @dataclass(frozen=True)
 class FileStat:
     path: Path
@@ -101,16 +109,19 @@ def scan_folder(data_dir: Path) -> dict[str, FileStat]:
     """
     if not data_dir.is_dir():
         raise FileNotFoundError(f"找不到資料夾:{data_dir}")
-    files: dict[str, FileStat] = {}
+    found: list[FileStat] = []
     for path in data_dir.iterdir():
-        if path.suffix != ".xlsx" or path.name.startswith("~$"):  # 排除 Excel 開啟中的鎖定檔
+        if not is_excel_file(path):
             continue
         try:
             info = path.stat()
         except OSError:  # 列出後被刪除或改名,下次再處理
             continue
         if stat_module.S_ISREG(info.st_mode):
-            files[path.stem] = FileStat(path, info.st_mtime, info.st_size)
+            found.append(FileStat(path, info.st_mtime, info.st_size))
+    # 分類名稱為檔名去掉副檔名;同名不同副檔名(報表.xlsx 與 報表.xlsm)時改用完整檔名區分
+    stems = [f.path.stem for f in found]
+    files = {(f.path.stem if stems.count(f.path.stem) == 1 else f.path.name): f for f in found}
     return dict(sorted(files.items()))
 
 
@@ -227,7 +238,7 @@ def read_excel_safely(path: Path, include_hidden: bool = False) -> dict[str, She
     讀取失敗時拋出 ExcelReadError,訊息為簡短的中文原因。
     """
     with tempfile.TemporaryDirectory(prefix="excel-lookup-") as tmp:
-        tmp_path = Path(tmp) / path.name
+        tmp_path = Path(tmp) / (path.stem + path.suffix.lower())  # 副檔名轉小寫,openpyxl 依副檔名判斷格式
         try:
             shutil.copyfile(path, tmp_path)
         except OSError as exc:
