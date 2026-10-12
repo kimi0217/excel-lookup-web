@@ -75,6 +75,7 @@ def create_app(config: dict | None = None) -> FastAPI:
         data_dir, include_hidden, include_hidden_rc,
         include_subfolders=include_subfolders,
         exclude=[backup_dir] if backup_dir else [],  # 備份資料夾放在 data_dir 底下時不可當成資料
+        header_overrides=config.get("header_overrides"),
     )
 
     @asynccontextmanager

@@ -124,15 +124,17 @@ def tidy_columns(header: list[str]) -> list[str]:
 
 
 def build_table(
-    grid: list[list[str]], is_text: list[list[bool]], merges: list[Merge]
+    grid: list[list[str]], is_text: list[list[bool]], merges: list[Merge], header_row: int | None = None
 ) -> tuple[list[str], list[list[str]]]:
     """回傳 (欄位名稱, 資料列)。
 
+    header_row(0 起算)為手動指定的表頭列,有指定時不做自動偵測。
     - 表頭上方的列(標題、說明)不列入資料
     - 資料區的合併範圍每一格都填入合併格的值;起點在表頭或以上的合併不處理
     - 略過全空白的列,以及表頭與資料都空白的欄
     """
-    header_row = detect_header(grid, is_text, merges)
+    if header_row is None:
+        header_row = detect_header(grid, is_text, merges)
     if header_row is None:
         return [], []
     data_merges = [m for m in merges if m.min_row > header_row]
