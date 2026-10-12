@@ -1,4 +1,5 @@
 import hashlib
+import re
 from pathlib import Path
 
 import pytest
@@ -72,10 +73,12 @@ def test_search_respects_max_results(data_dir):
 
 
 def test_api_categories(client):
-    assert client.get("/api/categories").json() == [
-        {"name": "員工", "status": "ok", "error": None},
-        {"name": "設備", "status": "ok", "error": None},
+    cats = client.get("/api/categories").json()
+    assert [(c["name"], c["status"], c["error"], c["rows"], c["sheets"]) for c in cats] == [
+        ("員工", "ok", None, 2, 1),
+        ("設備", "ok", None, 2, 1),
     ]
+    assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", c["updated"]) for c in cats)
 
 
 def test_api_search_with_category(client):

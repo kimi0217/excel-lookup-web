@@ -31,6 +31,13 @@
   - `launcher.py`:第一次設定(選資料夾產生 config.json)、啟動前檢查、顯示網址;`--background` 為自動啟動用
   - `autostart.py`:Windows 工作排程器(XML 建立)/ macOS LaunchAgent
 
+## API 與前端
+- `GET /api/categories`:檔案清單(狀態、筆數、工作表數、檔案修改時間)
+- `GET /api/files/{name}`:單一檔案摘要與工作表清單
+- `GET /api/files/{name}/rows?sheet=&q=&sort=&order=&page=&page_size=`:工作表分頁資料(預設每頁 100,上限 500);篩選、排序、分頁都在伺服器端,不可一次送出整份大檔。排序:數字(含貨幣、千分位)依數值,空白永遠排最後;各欄排序結果快取在 Sheet._sort_cache
+- `GET /api/search?q=`:跨所有檔案搜尋(最多 500 筆)
+- 前端以 hash 路由:`#/` 檔案列表、`#/file/<檔名>?sheet=&q=&sort=&order=&page=` 資料檢視、`#/search?q=` 跨檔搜尋。檔案內的搜尋、排序、換頁用 history.replaceState 更新網址(不新增瀏覽紀錄),上一頁回到檔案列表
+
 ## 部署腳本的規則
 - 所有畫面訊息用繁體中文,出錯時說明原因與處理方式(common.print_error),不要只顯示英文錯誤
 - `.bat` 必須 UTF-8 無 BOM、CRLF 換行,前兩行為 `@echo off`、`chcp 65001 >nul`;中文只能出現在 echo/rem/title,echo 訊息用全形括號(半形括號在 if 區塊中會提早結束區塊)。.gitattributes 強制換行格式,tests/test_deploy.py 會檢查

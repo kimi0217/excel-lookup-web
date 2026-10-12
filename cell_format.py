@@ -171,3 +171,20 @@ def display_value(value: object, number_format: str | None = None) -> str:
 def normalize(text: str) -> str:
     """搜尋用正規化:不分大小寫、/ 與 - 視為相同、忽略數字間的千分位逗號。"""
     return _DIGIT_COMMA.sub("", text.casefold().replace("/", "-"))
+
+
+# 排序時視為數字的文字:可有正負號、括號(負數)、貨幣符號、千分位、百分比或「元」
+_SORT_NUMBER = re.compile(
+    r"^(?P<open>\()?(?P<sign>[-+]?)(?:NT\$|US\$|\$|¥|€|£)?\s*(?P<num>\d+(?:\.\d+)?)\s*(?:%|元)?(?(open)\))$"
+)
+
+
+def sort_key(text: str) -> tuple[int, float | str]:
+    """排序用的鍵:數字(含貨幣、千分位)依數值排在前面,其他文字依字串排序。空白由呼叫端放最後。"""
+    match = _SORT_NUMBER.match(_DIGIT_COMMA.sub("", text.strip()))
+    if match:
+        value = float(match["num"])
+        if match["open"] or match["sign"] == "-":
+            value = -value
+        return (0, value)
+    return (1, text.casefold())

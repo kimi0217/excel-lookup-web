@@ -7,6 +7,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
@@ -92,6 +93,34 @@ def create_app(config: dict | None = None) -> FastAPI:
     def categories() -> list[dict]:
         """分類清單與載入狀態(ok / error / loading)。"""
         return catalog.categories()
+
+    @app.get("/api/files/{name}")
+    def file_info(name: str) -> dict:
+        """單一檔案的摘要與工作表清單。"""
+        try:
+            return catalog.file_info(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="找不到此檔案") from None
+
+    @app.get("/api/files/{name}/rows")
+    def file_rows(
+        name: str,
+        sheet: str | None = Query(None, description="工作表名稱,留空為第一個工作表"),
+        q: str = Query("", description="篩選關鍵字,留空顯示全部"),
+        sort: int | None = Query(None, ge=0, description="排序欄位(0 起算)"),
+        order: Literal["asc", "desc"] = Query("asc", description="排序方向"),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(100, ge=1, le=500),
+    ) -> dict:
+        """工作表的分頁資料,可篩選與排序;不帶關鍵字時回傳整份資料的第 page 頁。"""
+        try:
+            return catalog.rows(name, sheet, q, sort, order == "desc", page, page_size)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="找不到此檔案") from None
+        except excel_reader.SheetNotFound:
+            raise HTTPException(status_code=404, detail="找不到此工作表") from None
+        except excel_reader.SortColumnNotFound:
+            raise HTTPException(status_code=400, detail="排序欄位不存在") from None
 
     @app.get("/api/search")
     def search(
