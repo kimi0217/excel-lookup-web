@@ -2,7 +2,8 @@
 
 - Windows:工作排程器,以目前登入的使用者帳號在登入後於背景執行(讀得到該帳號可存取的網路共用資料夾,
   不需要輸入密碼)。以 XML 建立工作,才能取消預設的「執行超過 3 天自動停止」與「使用電池時不啟動」。
-  不可以系統管理員身分執行:UAC 要求輸入另一個管理員帳號的密碼時,工作會建在那個帳號底下。
+  執行帳號必須是登入桌面的使用者:UAC 要求輸入另一個管理員帳號的密碼時,工作會建在那個帳號底下,所以拒絕;
+  同一個帳號提高權限(含 UAC 關閉)照常建立。
   防火牆規則由 firewall.py(「設定防火牆.bat」)另外設定。
 - macOS:使用者的 LaunchAgent,登入後於背景執行。
 
@@ -177,17 +178,39 @@ def start_now_or_explain(port: int, start) -> None:
 
 # ---------- Windows ----------
 
-def install_windows(config: dict) -> int:
+def check_windows_account() -> str | None:
+    """確認排程工作會建在平常登入的帳號底下。回傳要建立工作的帳號;不可建立時顯示說明並回傳 None。
+
+    - 執行帳號與登入桌面的使用者相同(含 UAC 按「是」、UAC 關閉的管理員帳號):照常建立
+    - 不同(UAC 輸入了別的管理員帳號密碼):工作會建在那個帳號底下,拒絕
+    - 取不到其中一個帳號時無法比對:以系統管理員身分執行就拒絕
+    """
+    desktop, process = common.windows_desktop_user(), common.windows_process_user()
+    if desktop and process:
+        if common.same_windows_account(desktop, process):
+            return process
+        print_error(f"目前是用帳號「{process}」執行,不是平常登入這台電腦的帳號「{desktop}」。", [
+            "關閉這個視窗",
+            f"請用平常登入的帳號直接點兩下{script('設定開機自動啟動')}"
+            "(不要按右鍵選「以系統管理員身分執行」,也不要輸入其他帳號的密碼)",
+        ])
+        print("未建立自動啟動的排程工作(否則會建在其他帳號底下,平常登入時不會啟動)。")
+        return None
     if common.is_windows_admin():
-        # 以系統管理員身分執行時,USERNAME 可能是 UAC 輸入密碼的那個管理員帳號,工作會建錯帳號
         print_error("請不要以系統管理員身分執行這個檔案,直接點兩下即可。", [
             "關閉這個視窗",
             f"直接點兩下{script('設定開機自動啟動')}(不要按右鍵選「以系統管理員身分執行」)",
             f"防火牆需要系統管理員權限,請另外在{script('設定防火牆')}上按滑鼠右鍵,選「以系統管理員身分執行」",
         ])
         print("未建立自動啟動的排程工作。")
+        return None
+    return process or current_windows_user()
+
+
+def install_windows(config: dict) -> int:
+    user = check_windows_account()
+    if user is None:
         return 1
-    user = current_windows_user()
     xml = build_task_xml(
         user=user,
         command=str(common.venv_python(windowed=True)),
