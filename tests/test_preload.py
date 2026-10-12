@@ -67,7 +67,7 @@ def test_refresh_only_rereads_changed_files(data_dir, monkeypatch):
     catalog.refresh()
     read = []
     real = excel_reader.read_excel_safely
-    monkeypatch.setattr(excel_reader, "read_excel_safely", lambda p, h: read.append(p.stem) or real(p, h))
+    monkeypatch.setattr(excel_reader, "read_excel_safely", lambda p, *a: read.append(p.stem) or real(p, *a))
 
     catalog.refresh()
     assert read == []
@@ -102,7 +102,7 @@ def test_small_files_load_first(data_dir, monkeypatch):
     make_big(data_dir / "大檔.xlsx")
     order = []
     real = excel_reader.read_excel_safely
-    monkeypatch.setattr(excel_reader, "read_excel_safely", lambda p, h: order.append(p.stem) or real(p, h))
+    monkeypatch.setattr(excel_reader, "read_excel_safely", lambda p, *a: order.append(p.stem) or real(p, *a))
     excel_reader.Catalog(data_dir).refresh()
     assert order == ["小檔", "大檔"]
 
@@ -113,10 +113,10 @@ def test_stale_data_served_while_reloading(data_dir, monkeypatch):
     started, release = threading.Event(), threading.Event()
     real = excel_reader.read_excel_safely
 
-    def slow(path, include_hidden):
+    def slow(path, *args):
         started.set()
         release.wait(5)
-        return real(path, include_hidden)
+        return real(path, *args)
 
     monkeypatch.setattr(excel_reader, "read_excel_safely", slow)
     make_xlsx(data_dir / "小檔.xlsx", "新內容")
@@ -140,10 +140,10 @@ def test_app_preloads_in_background_and_reports_loading(data_dir, monkeypatch):
     release = threading.Event()
     real = excel_reader.read_excel_safely
 
-    def slow(path, include_hidden):
+    def slow(path, *args):
         if path.stem == "大檔":
             release.wait(5)
-        return real(path, include_hidden)
+        return real(path, *args)
 
     monkeypatch.setattr(excel_reader, "read_excel_safely", slow)
     app = create_app({"data_dir": data_dir, "reload_interval_seconds": 0.05})

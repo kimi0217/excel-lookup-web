@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 import math
+import posixpath
 import stat as stat_module
 import threading
 import time
@@ -22,7 +23,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import column_index_from_string
 
 from cell_format import display_value, normalize, sort_key, split_keywords
-from table_layout import Merge, build_table
+from table_layout import Merge, build_table, drop_hidden
 
 logger = logging.getLogger(__name__)
 
@@ -155,10 +156,21 @@ MSG_MERGE_UNSUPPORTED = (
 _merge_warning_logged = False
 
 
-def _merge_ranges(archive: zipfile.ZipFile, ws) -> list[Merge]:
-    """讀取工作表的合併範圍。openpyxl 唯讀模式不提供,直接從工作表 XML 取得。
+_ROW_TAG = re.compile(rb"<(?:\w+:)?row\b([^>]*)>")
+_COL_TAG = re.compile(rb"<(?:\w+:)?col\b([^>]*)>")
+_AUTO_FILTER = re.compile(rb'<(?:\w+:)?autoFilter\b[^>]*?\bref="[A-Z]+(\d+)(?::[A-Z]+(\d+))?"')
+_RELATIONSHIP = re.compile(rb"<(?:\w+:)?Relationship\b([^>]*)>")
 
-    取不到時回傳空清單(不當掉),並記錄一次警告。
+
+def _attr(attrs: bytes, name: str) -> str | None:
+    match = re.search(rb"\b" + name.encode() + rb'="([^"]*)"', attrs)
+    return match.group(1).decode() if match else None
+
+
+def _sheet_xml(archive: zipfile.ZipFile, ws) -> tuple[str, bytes] | None:
+    """取得工作表在檔案中的路徑與 XML。openpyxl 唯讀模式不提供合併範圍與隱藏列欄,只能自行解析。
+
+    取不到時回傳 None(不當掉),並記錄一次警告。
     """
     global _merge_warning_logged
     sheet_path = getattr(ws, SHEET_PATH_ATTR, None)
@@ -166,11 +178,15 @@ def _merge_ranges(archive: zipfile.ZipFile, ws) -> list[Merge]:
         if not _merge_warning_logged:
             logger.warning(MSG_MERGE_UNSUPPORTED, SHEET_PATH_ATTR)
             _merge_warning_logged = True
-        return []
+        return None
+    sheet_path = sheet_path.lstrip("/")
     try:
-        xml = archive.read(sheet_path.lstrip("/"))
+        return sheet_path, archive.read(sheet_path)
     except KeyError:
-        return []
+        return None
+
+
+def _parse_merges(xml: bytes) -> list[Merge]:
     if b"mergeCell" not in xml:
         return []
     merges = []
@@ -181,6 +197,63 @@ def _merge_ranges(archive: zipfile.ZipFile, ws) -> list[Merge]:
             int(r2) - 1, column_index_from_string(c2.decode()) - 1,
         ))
     return merges
+
+
+def _merge_ranges(archive: zipfile.ZipFile, ws) -> list[Merge]:
+    """讀取工作表的合併範圍;取不到時回傳空清單。"""
+    found = _sheet_xml(archive, ws)
+    return _parse_merges(found[1]) if found else []
+
+
+def _filter_row_ranges(archive: zipfile.ZipFile, sheet_path: str, xml: bytes) -> list[tuple[int, int]]:
+    """篩選範圍涵蓋的列(1 起算,含兩端):工作表的 autoFilter,以及「格式化為表格」各表格的 autoFilter。"""
+    ranges = [(int(r1), int(r2 or r1)) for r1, r2 in _AUTO_FILTER.findall(xml)]
+    if b"tablePart" not in xml:
+        return ranges
+    folder = posixpath.dirname(sheet_path)
+    rels_path = posixpath.join(folder, "_rels", posixpath.basename(sheet_path) + ".rels")
+    try:
+        rels = archive.read(rels_path)
+    except KeyError:
+        return ranges
+    for attrs in _RELATIONSHIP.findall(rels):
+        if not (_attr(attrs, "Type") or "").endswith("/table"):
+            continue
+        target = _attr(attrs, "Target") or ""
+        table_path = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join(folder, target))
+        try:
+            table_xml = archive.read(table_path)
+        except KeyError:
+            continue
+        ranges += [(int(r1), int(r2 or r1)) for r1, r2 in _AUTO_FILTER.findall(table_xml)]
+    return ranges
+
+
+def _parse_hidden(archive: zipfile.ZipFile, sheet_path: str, xml: bytes) -> tuple[set[int], list[tuple[int, int]]]:
+    """回傳 (要略過的列, 要略過的欄範圍),皆為 0 起算。
+
+    手動隱藏的列與欄略過;位於篩選範圍內的隱藏列是篩選造成的,照常讀取。
+    """
+    if b'hidden="1"' not in xml and b'hidden="true"' not in xml:
+        return set(), []
+    hidden_cols = []
+    for attrs in _COL_TAG.findall(xml):
+        if _attr(attrs, "hidden") in ("1", "true"):
+            first, last = int(_attr(attrs, "min") or 0), int(_attr(attrs, "max") or 0)
+            if first:
+                hidden_cols.append((first - 1, (last or first) - 1))
+    hidden_rows = []
+    row_number = 0
+    for attrs in _ROW_TAG.findall(xml):
+        r = _attr(attrs, "r")
+        row_number = int(r) if r else row_number + 1  # r 可省略,省略時為上一列的下一列
+        if _attr(attrs, "hidden") in ("1", "true"):
+            hidden_rows.append(row_number)
+    if not hidden_rows:
+        return set(), hidden_cols
+    filters = _filter_row_ranges(archive, sheet_path, xml)
+    manual = {r - 1 for r in hidden_rows if not any(first <= r <= last for first, last in filters)}
+    return manual, hidden_cols
 
 
 def merge_support_ok() -> bool:
@@ -199,8 +272,10 @@ def merge_support_ok() -> bool:
         ro.close()
 
 
-def _read_sheet(ws, merges: list[Merge]) -> Sheet:
-    """讀出顯示文字的網格後,交給 build_table 偵測表頭、填入合併格、整理欄位。"""
+def _read_sheet(
+    ws, merges: list[Merge], hidden_rows: set[int] | None = None, hidden_cols: list[tuple[int, int]] | None = None
+) -> Sheet:
+    """讀出顯示文字的網格,移除隱藏的列與欄後,交給 build_table 偵測表頭、填入合併格、整理欄位。"""
     ws.reset_dimensions()  # 有些程式產生的檔案記錄的範圍不正確,改為實際讀到哪算到哪
     grid: list[list[str]] = []
     is_text: list[list[bool]] = []
@@ -213,27 +288,41 @@ def _read_sheet(ws, merges: list[Merge]) -> Sheet:
     grid = [(r + [""] * width)[:width] for r in grid]
     is_text = [(r + [False] * width)[:width] for r in is_text]
     merges = [m for m in merges if m.min_row < len(grid)]
+    if hidden_rows or hidden_cols:
+        cols = {c for first, last in hidden_cols or [] for c in range(first, min(last, width - 1) + 1)}
+        rows = {r for r in hidden_rows or set() if r < len(grid)}
+        grid, is_text, merges = drop_hidden(grid, is_text, merges, rows, cols)
     columns, rows = build_table(grid, is_text, merges)
     return Sheet.build(columns, rows)
 
 
-def _read_workbook(path: Path, include_hidden: bool) -> dict[str, Sheet]:
+def _read_workbook(path: Path, include_hidden: bool, include_hidden_rows_columns: bool) -> dict[str, Sheet]:
     wb = load_workbook(path, read_only=True, data_only=True)  # data_only:公式讀取 Excel 存下的計算結果
     try:
         with zipfile.ZipFile(path) as archive:
-            return {
-                ws.title: _read_sheet(ws, _merge_ranges(archive, ws))
-                for ws in wb.worksheets
-                if include_hidden or ws.sheet_state == "visible"  # 隱藏、極度隱藏的工作表預設不讀
-            }
+            sheets = {}
+            for ws in wb.worksheets:
+                if not include_hidden and ws.sheet_state != "visible":  # 隱藏、極度隱藏的工作表預設不讀
+                    continue
+                found = _sheet_xml(archive, ws)  # 每個工作表的 XML 只讀一次
+                merges, hidden_rows, hidden_cols = [], set(), []
+                if found:
+                    merges = _parse_merges(found[1])
+                    if not include_hidden_rows_columns:
+                        hidden_rows, hidden_cols = _parse_hidden(archive, *found)
+                sheets[ws.title] = _read_sheet(ws, merges, hidden_rows, hidden_cols)
+            return sheets
     finally:
         wb.close()  # 先釋放檔案,Windows 才能刪除暫存檔
 
 
-def read_excel_safely(path: Path, include_hidden: bool = False) -> dict[str, Sheet]:
+def read_excel_safely(
+    path: Path, include_hidden: bool = False, include_hidden_rows_columns: bool = False
+) -> dict[str, Sheet]:
     """複製到暫存資料夾後讀取工作表,讀完立即刪除暫存檔。
 
-    include_hidden 為 False 時不讀取隱藏與極度隱藏的工作表。
+    include_hidden 為 False 時不讀取隱藏與極度隱藏的工作表;include_hidden_rows_columns 為 False 時
+    不讀取手動隱藏的列與欄(篩選造成的隱藏列照常讀取)。
 
     讀取失敗時拋出 ExcelReadError,訊息為簡短的中文原因。
     """
@@ -244,7 +333,7 @@ def read_excel_safely(path: Path, include_hidden: bool = False) -> dict[str, She
         except OSError as exc:
             raise ExcelReadError(MSG_UNAVAILABLE) from exc
         try:
-            return _read_workbook(tmp_path, include_hidden)
+            return _read_workbook(tmp_path, include_hidden, include_hidden_rows_columns)
         except Exception as exc:
             reason = _describe_failure(tmp_path)
             logger.debug("無法讀取 %s:%s(%r)", path.name, reason, exc)  # 警告由 Catalog 在狀態改變時記錄
@@ -269,9 +358,10 @@ class Catalog:
     資料夾暫時無法連線時保留已載入的資料,恢復後自動更新。
     """
 
-    def __init__(self, data_dir: Path, include_hidden: bool = False) -> None:
+    def __init__(self, data_dir: Path, include_hidden: bool = False, include_hidden_rows_columns: bool = False) -> None:
         self.data_dir = data_dir
         self.include_hidden = include_hidden
+        self.include_hidden_rows_columns = include_hidden_rows_columns
         self._entries: dict[str, _Entry] = {}
         self._files: dict[str, FileStat] = {}  # 最後一次成功列出的檔案
         self._refresh_lock = threading.Lock()
@@ -324,7 +414,8 @@ class Catalog:
                 path = files[name].path
                 previous = self._entries.get(name)
                 try:
-                    self._entries[name] = _Entry(key, read_excel_safely(path, self.include_hidden))
+                    sheets = read_excel_safely(path, self.include_hidden, self.include_hidden_rows_columns)
+                    self._entries[name] = _Entry(key, sheets)
                 except ExcelReadError as exc:
                     self._entries[name] = _Entry(key, {}, str(exc))
                     if previous is None or previous.error != str(exc):

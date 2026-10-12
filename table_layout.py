@@ -22,6 +22,40 @@ class Merge:
     max_col: int
 
 
+def drop_hidden(
+    grid: list[list[str]],
+    is_text: list[list[bool]],
+    merges: list[Merge],
+    hidden_rows: set[int],
+    hidden_cols: set[int],
+) -> tuple[list[list[str]], list[list[bool]], list[Merge]]:
+    """移除隱藏的列與欄(0 起算),合併範圍對應到剩下的列與欄。
+
+    合併範圍的左上角被隱藏時,值移到剩下範圍的新左上角,合併範圍內其他列仍會填入該值。
+    """
+    if not hidden_rows and not hidden_cols:
+        return grid, is_text, merges
+    width = len(grid[0]) if grid else 0
+    rows = [r for r in range(len(grid)) if r not in hidden_rows]
+    cols = [c for c in range(width) if c not in hidden_cols]
+    row_pos = {r: i for i, r in enumerate(rows)}
+    col_pos = {c: i for i, c in enumerate(cols)}
+    new_grid = [[grid[r][c] for c in cols] for r in rows]
+    new_text = [[is_text[r][c] for c in cols] for r in rows if r < len(is_text)]  # is_text 只有前幾列
+    new_merges = []
+    for m in merges:
+        kept_rows = [r for r in range(m.min_row, m.max_row + 1) if r in row_pos]
+        kept_cols = [c for c in range(m.min_col, m.max_col + 1) if c in col_pos]
+        if not kept_rows or not kept_cols:
+            continue
+        moved = Merge(row_pos[kept_rows[0]], col_pos[kept_cols[0]], row_pos[kept_rows[-1]], col_pos[kept_cols[-1]])
+        new_grid[moved.min_row][moved.min_col] = grid[m.min_row][m.min_col]
+        if moved.min_row < len(new_text) and m.min_row < len(is_text):
+            new_text[moved.min_row][moved.min_col] = is_text[m.min_row][m.min_col]
+        new_merges.append(moved)
+    return new_grid, new_text, new_merges
+
+
 def _filled_row(grid: list[list[str]], is_text: list[list[bool]], r: int, merges: list[Merge]):
     """回傳第 r 列「合併範圍視為每格都有值」時的值與是否為文字(只用來偵測表頭)。"""
     values = list(grid[r])

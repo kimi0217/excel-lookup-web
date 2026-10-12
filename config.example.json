@@ -6,5 +6,6 @@
   "port": 8000,
   "max_results": 500,
   "include_hidden_sheets": false,
+  "include_hidden_rows_columns": false,
   "reload_interval_seconds": 10
 }
