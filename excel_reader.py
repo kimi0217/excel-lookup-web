@@ -210,7 +210,7 @@ def read_excel_safely(path: Path, include_hidden: bool = False) -> dict[str, She
             return _read_workbook(tmp_path, include_hidden)
         except Exception as exc:
             reason = _describe_failure(tmp_path)
-            logger.warning("無法讀取 %s:%s(%s)", path.name, reason, type(exc).__name__)
+            logger.debug("無法讀取 %s:%s(%r)", path.name, reason, exc)  # 警告由 Catalog 在狀態改變時記錄
             raise ExcelReadError(reason) from exc
         finally:
             tmp_path.unlink(missing_ok=True)
@@ -237,7 +237,10 @@ class Catalog:
         self._refresh_lock = threading.Lock()
 
     def refresh(self) -> None:
-        """載入新增或變動的檔案(小檔優先),移除已刪除的檔案。"""
+        """載入新增或變動的檔案(小檔優先),移除已刪除的檔案。
+
+        讀取失敗的檔案每次都重讀(可能只是暫時被鎖定或網路不穩),同樣的錯誤只記錄一次。
+        """
         with self._refresh_lock:
             names = list_categories(self.data_dir)
             for gone in set(self._entries) - set(names):
@@ -250,14 +253,20 @@ class Catalog:
                     continue
                 key = (stat.st_mtime, stat.st_size)
                 entry = self._entries.get(name)
-                if entry is None or entry.key != key:
+                if entry is None or entry.key != key or entry.error:
                     pending.append((stat.st_size, name, key))
             for _, name, key in sorted(pending):
                 path = self.data_dir / f"{name}.xlsx"
+                previous = self._entries.get(name)
                 try:
                     self._entries[name] = _Entry(key, read_excel_safely(path, self.include_hidden))
                 except ExcelReadError as exc:
                     self._entries[name] = _Entry(key, {}, str(exc))
+                    if previous is None or previous.error != str(exc):
+                        logger.warning("無法讀取 %s:%s", path.name, exc)
+                else:
+                    if previous is not None and previous.error:
+                        logger.info("已可讀取 %s", path.name)
 
     def _summary(self, name: str) -> dict:
         """單一檔案的狀態摘要:status 為 ok、error(附 error 原因)或 loading(尚未載入)。"""
